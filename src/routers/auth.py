@@ -163,6 +163,9 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         norm_host=norm_host,
     )
     db.add(new_user)
+    db.flush()
+    if not provider.active_master_user_id:
+        provider.active_master_user_id = new_user.id
     db.commit()
     db.refresh(new_user)
 
