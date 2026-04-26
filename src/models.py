@@ -292,6 +292,16 @@ class MovieStream(Base):
     audio_channels = Column(Integer, nullable=True)
     audio_channel_layout = Column(String(50), nullable=True)
 
+    o_name = Column(String(512), nullable=True)
+    description = Column(Text, nullable=True)
+    actors = Column(Text, nullable=True)
+    country = Column(String(100), nullable=True)
+    age_rating = Column(String(20), nullable=True)
+    bitrate = Column(Integer, nullable=True)
+    duration_secs = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=True)
+    genre_raw = Column(String(255), nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -339,6 +349,11 @@ class SeriesStream(Base):
     youtube_trailer = Column(String(100), nullable=True)
     episode_run_time = Column(Integer, nullable=True)
     tmdb_id = Column(Integer, nullable=True)
+
+    o_name = Column(String(512), nullable=True)
+    genre_raw = Column(String(255), nullable=True)
+
+    episodes_last_synced_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -429,8 +444,12 @@ class SeriesEpisode(Base):
     audio_codec = Column(String(20), nullable=True)
     audio_channels = Column(Integer, nullable=True)
     audio_channel_layout = Column(String(50), nullable=True)
+    audio_language = Column(String(10), nullable=True)
 
     bitrate = Column(Integer, nullable=True)
+    frame_rate = Column(String(20), nullable=True)
+    aspect_ratio = Column(String(10), nullable=True)
+    crew = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

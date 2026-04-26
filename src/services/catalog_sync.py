@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
@@ -31,6 +32,8 @@ from ..models import (
     MovieCategory,
     MovieStream,
     SerieCategory,
+    SeriesEpisode,
+    SeriesSeason,
     SeriesStream,
     XtreamProvider,
 )
@@ -61,6 +64,14 @@ class SyncSummary:
     serie_categories_updated: int = 0
     series_streams_inserted: int = 0
     series_streams_updated: int = 0
+    series_episodes_skipped: int = 0
+    series_episodes_fetched: int = 0
+    series_episodes_failed: int = 0
+    seasons_inserted: int = 0
+    seasons_updated: int = 0
+    episodes_inserted: int = 0
+    episodes_updated: int = 0
+    episodes_pruned: int = 0
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -522,6 +533,312 @@ def _sync_series_streams(
 
 
 # ---------------------------------------------------------------------------
+# Episodes — phase 2
+# ---------------------------------------------------------------------------
+
+def _pick_default_video(track) -> Optional[dict]:
+    """Pick first non-mjpeg, non-attached_pic video track."""
+    if isinstance(track, dict):
+        candidates = [track]
+    elif isinstance(track, list):
+        candidates = [t for t in track if isinstance(t, dict)]
+    else:
+        return None
+    for s in candidates:
+        if (s.get("codec_name") or "").lower() == "mjpeg":
+            continue
+        if (s.get("disposition") or {}).get("attached_pic"):
+            continue
+        return s
+    return candidates[0] if candidates else None
+
+
+def _pick_default_audio(track) -> Optional[dict]:
+    if isinstance(track, dict):
+        candidates = [track]
+    elif isinstance(track, list):
+        candidates = [t for t in track if isinstance(t, dict)]
+    else:
+        return None
+    for s in candidates:
+        if (s.get("disposition") or {}).get("default"):
+            return s
+    return candidates[0] if candidates else None
+
+
+def _episode_sync_up_to_date(series: SeriesStream, upstream_last_modified: Optional[datetime]) -> bool:
+    """Skip per-series episode fetch if local data is at least as fresh as upstream's last_modified.
+
+    Compares ``episodes_last_synced_at`` (set after a successful per-series upsert) against
+    the upstream ``last_modified`` value from the get_series listing. If we've already synced
+    at or after that watermark, the data is current and we can skip the get_series_info call.
+    """
+    if upstream_last_modified is None:
+        # No upstream signal → safer to refetch.
+        return False
+    last_synced = series.episodes_last_synced_at
+    if last_synced is None:
+        return False
+    return last_synced >= upstream_last_modified
+
+
+def _upsert_seasons(
+    db: Session, series: SeriesStream, seasons_data: list[dict], summary: SyncSummary
+) -> dict[int, int]:
+    """Returns {season_number: SeriesSeason.id}."""
+    existing = (
+        db.query(SeriesSeason)
+        .filter(SeriesSeason.series_id == series.id)
+        .all()
+    )
+    by_num = {row.season_number: row for row in existing}
+    out: dict[int, int] = {}
+    for sd in seasons_data or []:
+        sn = _to_int(sd.get("season_number"))
+        if sn is None:
+            continue
+        row = by_num.get(sn)
+        if row is None:
+            row = SeriesSeason(
+                series_id=series.id,
+                provider_id=series.provider_id,
+                tmdb_season_id=_to_int(sd.get("id")),
+                season_number=sn,
+                name=_safe_text(sd.get("name"), 255),
+                overview=sd.get("overview"),
+                air_date=_date_or_none(sd.get("air_date")),
+                episode_count=_to_int(sd.get("episode_count")),
+                vote_average=float(sd["vote_average"]) if sd.get("vote_average") not in (None, "") else None,
+                cover=_safe_url(sd.get("cover")),
+                cover_big=_safe_url(sd.get("cover_big")),
+            )
+            db.add(row)
+            db.flush()
+            summary.seasons_inserted += 1
+        else:
+            changed = False
+            for field_name, new_value in (
+                ("tmdb_season_id", _to_int(sd.get("id"))),
+                ("name", _safe_text(sd.get("name"), 255)),
+                ("overview", sd.get("overview")),
+                ("air_date", _date_or_none(sd.get("air_date"))),
+                ("episode_count", _to_int(sd.get("episode_count"))),
+                ("cover", _safe_url(sd.get("cover"))),
+                ("cover_big", _safe_url(sd.get("cover_big"))),
+            ):
+                if getattr(row, field_name) != new_value:
+                    setattr(row, field_name, new_value)
+                    changed = True
+            if changed:
+                summary.seasons_updated += 1
+        out[sn] = row.id
+    return out
+
+
+def _normalize_episodes_block(block) -> dict:
+    """Some providers return episodes as a flat list instead of {season: [eps]}.
+
+    Normalise to {season_number_str: [eps]} either way.
+    """
+    if isinstance(block, dict):
+        return block
+    if isinstance(block, list):
+        out: dict = {}
+        for ep in block:
+            if not isinstance(ep, dict):
+                continue
+            sn = ep.get("season")
+            if sn is None:
+                continue
+            out.setdefault(str(sn), []).append(ep)
+        return out
+    return {}
+
+
+def _upsert_episodes(
+    db: Session,
+    series: SeriesStream,
+    episodes_block,
+    season_id_by_number: dict[int, int],
+    summary: SyncSummary,
+) -> set[int]:
+    """Returns the set of upstream xtream_ids we touched (for prune)."""
+    existing_rows = (
+        db.query(SeriesEpisode)
+        .filter(SeriesEpisode.series_id == series.id)
+        .all()
+    )
+    existing = {row.xtream_id: row for row in existing_rows}
+
+    seen: set[int] = set()
+    block = _normalize_episodes_block(episodes_block)
+    for season_key, ep_list in block.items():
+        season_number = _to_int(season_key)
+        if season_number is None or not isinstance(ep_list, list):
+            continue
+        season_pk = season_id_by_number.get(season_number)
+        if season_pk is None:
+            continue
+
+        for ep in ep_list:
+            if not isinstance(ep, dict):
+                continue
+            xid = _to_int(ep.get("id"))
+            if xid is None:
+                continue
+            seen.add(xid)
+
+            info = ep.get("info") or {}
+            video = _pick_default_video(info.get("video")) or {}
+            audio = _pick_default_audio(info.get("audio")) or {}
+            audio_lang = (audio.get("tags") or {}).get("language") if isinstance(audio.get("tags"), dict) else None
+
+            try:
+                added_dt = _ts_to_dt(ep.get("added"))
+            except Exception:
+                added_dt = None
+
+            payload = dict(
+                series_id=series.id,
+                season_id=season_pk,
+                provider_id=series.provider_id,
+                xtream_id=xid,
+                season_number=season_number,
+                episode_num=_to_int(ep.get("episode_num")) or 0,
+                raw_title=_safe_text(ep.get("title"), 512),
+                title=_safe_text(ep.get("title"), 512),
+                container_extension=_safe_text(ep.get("container_extension"), 20),
+                custom_sid=_safe_text(ep.get("custom_sid"), 255),
+                direct_source=_safe_url(ep.get("direct_source")),
+                added=added_dt,
+                tmdb_id=_to_int(info.get("tmdb_id")),
+                release_date=_date_or_none(info.get("releasedate")),
+                plot=info.get("plot"),
+                movie_image=_safe_url(info.get("movie_image")),
+                duration_secs=_to_int(info.get("duration_secs")),
+                rating=_safe_text(str(info.get("rating")) if info.get("rating") not in (None, "") else None, 20),
+                video_codec=_safe_text(video.get("codec_name"), 20),
+                video_width=_to_int(video.get("width")),
+                video_height=_to_int(video.get("height")),
+                audio_codec=_safe_text(audio.get("codec_name"), 20),
+                audio_channels=_to_int(audio.get("channels")),
+                audio_channel_layout=_safe_text(audio.get("channel_layout"), 50),
+                audio_language=_safe_text(audio_lang, 10),
+                bitrate=_to_int(info.get("bitrate")),
+                frame_rate=_safe_text(video.get("r_frame_rate") or video.get("avg_frame_rate"), 20),
+                aspect_ratio=_safe_text(video.get("display_aspect_ratio"), 10),
+                crew=info.get("crew"),
+            )
+
+            row = existing.get(xid)
+            if row is None:
+                db.add(SeriesEpisode(**payload))
+                summary.episodes_inserted += 1
+            else:
+                changed = False
+                for k, v in payload.items():
+                    if k in ("series_id", "provider_id", "xtream_id"):
+                        continue
+                    if getattr(row, k) != v:
+                        setattr(row, k, v)
+                        changed = True
+                if changed:
+                    summary.episodes_updated += 1
+
+    return seen
+
+
+def _sync_series_episodes(
+    db: Session,
+    provider: XtreamProvider,
+    client: XtreamClient,
+    summary: SyncSummary,
+) -> None:
+    upstream_series = client.get_series() or []
+    upstream_by_xid = {
+        int(s["series_id"]): s
+        for s in upstream_series
+        if s.get("series_id")
+    }
+
+    local_series = (
+        db.query(SeriesStream)
+        .filter(SeriesStream.provider_id == provider.id)
+        .order_by(SeriesStream.id)
+        .all()
+    )
+
+    total = len(local_series)
+    fetched_in_batch = 0
+    for idx, ss in enumerate(local_series):
+        if idx > 0 and idx % 100 == 0:
+            logger.info(
+                "episode sync progress: %d/%d series  skipped=%d fetched=%d failed=%d",
+                idx, total,
+                summary.series_episodes_skipped,
+                summary.series_episodes_fetched,
+                summary.series_episodes_failed,
+            )
+
+        upstream = upstream_by_xid.get(ss.xtream_id)
+        if not upstream:
+            continue
+        upstream_last_modified = _ts_to_dt(upstream.get("last_modified"))
+
+        if _episode_sync_up_to_date(ss, upstream_last_modified):
+            summary.series_episodes_skipped += 1
+            continue
+
+        info = client.get_series_info(ss.xtream_id)
+        if not info:
+            summary.errors.append(f"series xtream_id={ss.xtream_id}: get_series_info failed")
+            summary.series_episodes_failed += 1
+            continue
+
+        try:
+            season_ids = _upsert_seasons(db, ss, info.get("seasons") or [], summary)
+            seen_eps = _upsert_episodes(
+                db, ss, info.get("episodes") or {}, season_ids, summary
+            )
+            if seen_eps:
+                stale = (
+                    db.query(SeriesEpisode)
+                    .filter(SeriesEpisode.series_id == ss.id)
+                    .filter(~SeriesEpisode.xtream_id.in_(seen_eps))
+                    .all()
+                )
+                for row in stale:
+                    db.delete(row)
+                    summary.episodes_pruned += 1
+            ss.episodes_last_synced_at = upstream_last_modified or datetime.utcnow()
+        except Exception as exc:
+            logger.warning("series xtream_id=%s upsert failed: %s", ss.xtream_id, exc)
+            summary.errors.append(f"series xtream_id={ss.xtream_id}: {exc}")
+            summary.series_episodes_failed += 1
+            db.rollback()
+            continue
+
+        summary.series_episodes_fetched += 1
+        fetched_in_batch += 1
+        if fetched_in_batch >= 50:
+            db.commit()
+            fetched_in_batch = 0
+
+    db.commit()
+    logger.info(
+        "episode sync done: %d/%d series  skipped=%d fetched=%d failed=%d  "
+        "(episodes inserted=%d updated=%d pruned=%d)",
+        total, total,
+        summary.series_episodes_skipped,
+        summary.series_episodes_fetched,
+        summary.series_episodes_failed,
+        summary.episodes_inserted,
+        summary.episodes_updated,
+        summary.episodes_pruned,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Top-level entry
 # ---------------------------------------------------------------------------
 
@@ -565,6 +882,7 @@ def run_catalog_sync(provider_id: int) -> dict:
         _sync_live_streams(db, provider, client, live_cat_index, summary)
         _sync_movie_streams(db, provider, client, movie_cat_index, summary)
         _sync_series_streams(db, provider, client, serie_cat_index, summary)
+        _sync_series_episodes(db, provider, client, summary)
 
         provider.is_populated = True
         provider.last_synced_at = datetime.utcnow()
