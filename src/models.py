@@ -467,3 +467,25 @@ class SeriesEpisode(Base):
 
     series = relationship("SeriesStream", back_populates="episodes")
     season = relationship("SeriesSeason", back_populates="episodes")
+
+
+class Subtitle(Base):
+    __tablename__ = "subtitles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tmdb_id = Column(Integer, nullable=False, index=True)
+    lang = Column(String(10), nullable=False)
+    label = Column(String(100))
+    season = Column(Integer, nullable=False, default=0)
+    episode = Column(Integer, nullable=False, default=0)
+    vtt_content = Column(Text(length=2**24 - 1))
+    source_url = Column(String(500))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tmdb_id", "lang", "season", "episode",
+            name="uq_subtitle_tmdb_lang_ep",
+        ),
+    )
