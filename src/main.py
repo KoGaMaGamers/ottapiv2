@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .routers import admin_sync, auth
+from .routers import admin_providers, admin_sync, auth
 from .services.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(
@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="OTTAPI", version="0.1.0", lifespan=lifespan)
 
 app.include_router(admin_sync.router)
+app.include_router(admin_providers.router)
 app.include_router(auth.router)
 
 
