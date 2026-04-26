@@ -1091,6 +1091,12 @@ def run_catalog_sync(provider_id: int) -> dict:
         # its own background thread so this function returns quickly and the
         # 24h scheduler isn't blocked on a 4-hour cold-start enrichment.
         trigger_movie_details_sync(provider_id)
+
+        # Phase 4 — TMDB enrichment (genre links + vote_average + popularity
+        # + original_language). Independent upstream, separate background
+        # thread, watermarked on tmdb_synced_at so re-runs are no-ops.
+        from .tmdb_enrichment import trigger_tmdb_enrichment
+        trigger_tmdb_enrichment(provider_id)
     except Exception as exc:
         logger.exception("Catalog sync failed for provider id=%s", provider_id)
         summary.errors.append(f"unhandled: {exc}")

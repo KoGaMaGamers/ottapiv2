@@ -304,6 +304,11 @@ class MovieStream(Base):
     genre_raw = Column(String(255), nullable=True)
     details_synced_at = Column(DateTime, nullable=True)
 
+    tmdb_synced_at = Column(DateTime, nullable=True)
+    o_language = Column(String(10), nullable=True)
+    tmdb_vote_average = Column(Float, nullable=True)
+    tmdb_popularity = Column(Float, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -356,6 +361,10 @@ class SeriesStream(Base):
     genre_raw = Column(String(255), nullable=True)
 
     episodes_last_synced_at = Column(DateTime, nullable=True)
+    tmdb_synced_at = Column(DateTime, nullable=True)
+    o_language = Column(String(10), nullable=True)
+    tmdb_vote_average = Column(Float, nullable=True)
+    tmdb_popularity = Column(Float, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

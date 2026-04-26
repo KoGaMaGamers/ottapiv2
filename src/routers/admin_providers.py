@@ -10,6 +10,7 @@ from ..config import ADMIN_SECRET
 from ..database import get_db
 from ..models import IPTVUser, XtreamProvider
 from ..services.catalog_sync import trigger_provider_sync, trigger_movie_details_sync
+from ..services.tmdb_enrichment import trigger_tmdb_enrichment
 
 logger = logging.getLogger(__name__)
 
@@ -131,4 +132,22 @@ def trigger_movie_details(
     return {
         "provider_id": provider_id,
         "movie_details_sync_triggered": True,
+    }
+
+
+@router.post("/{provider_id}/sync/tmdb")
+def trigger_tmdb(
+    provider_id: int,
+    db: Session = Depends(get_db),
+    x_admin_secret: Optional[str] = Header(default=None, alias="X-Admin-Secret"),
+):
+    _require_admin(x_admin_secret)
+    provider = db.get(XtreamProvider, provider_id)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+
+    trigger_tmdb_enrichment(provider_id)
+    return {
+        "provider_id": provider_id,
+        "tmdb_enrichment_triggered": True,
     }
