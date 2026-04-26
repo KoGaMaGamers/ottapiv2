@@ -72,6 +72,8 @@ class SyncSummary:
     episodes_inserted: int = 0
     episodes_updated: int = 0
     episodes_pruned: int = 0
+    movie_details_fetched: int = 0
+    movie_details_failed: int = 0
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -839,6 +841,201 @@ def _sync_series_episodes(
 
 
 # ---------------------------------------------------------------------------
+# Movie details — phase 3 (Xtream get_vod_info per movie)
+# ---------------------------------------------------------------------------
+
+def _apply_vod_info_to_movie(ms: MovieStream, info: dict) -> None:
+    """Populate MovieStream fields from get_vod_info's `info` block.
+
+    Only fills fields that are currently NULL (idempotent — repeated runs
+    don't overwrite existing values that may have been hand-curated).
+    """
+    if ms.tmdb_id is None:
+        v = _to_int(info.get("tmdb_id"))
+        if v:
+            ms.tmdb_id = v
+
+    if not ms.o_name:
+        v = _safe_text(info.get("o_name"), 512)
+        if v:
+            ms.o_name = v
+
+    if not ms.cover_big:
+        ms.cover_big = _safe_url(info.get("cover_big") or info.get("movie_image"))
+
+    if not ms.backdrop_path:
+        bp = info.get("backdrop_path")
+        if isinstance(bp, list):
+            bp = bp[0] if bp else None
+        ms.backdrop_path = _safe_url(bp)
+
+    if not ms.description:
+        text = info.get("plot") or info.get("description")
+        if text:
+            ms.description = str(text)
+
+    if not ms.actors:
+        text = info.get("actors") or info.get("cast")
+        if text:
+            ms.actors = str(text)
+
+    if not ms.director:
+        if info.get("director"):
+            ms.director = str(info["director"])
+
+    if not ms.country:
+        v = _safe_text(info.get("country"), 100)
+        if v:
+            ms.country = v
+
+    if not ms.age_rating:
+        v = _safe_text(info.get("age"), 20)
+        if v:
+            ms.age_rating = v
+
+    if not ms.genre_raw:
+        v = _safe_text(info.get("genre"), 255)
+        if v:
+            ms.genre_raw = v
+
+    if not ms.status:
+        v = _safe_text(info.get("status"), 20)
+        if v:
+            ms.status = v
+
+    if not ms.youtube_trailer:
+        v = _safe_text(info.get("youtube_trailer"), 100)
+        if v:
+            ms.youtube_trailer = v
+
+    if not ms.releasedate:
+        ms.releasedate = _date_or_none(info.get("releasedate"))
+
+    if not ms.duration:
+        v = _safe_text(info.get("duration"), 20)
+        if v:
+            ms.duration = v
+
+    if ms.duration_secs is None:
+        v = _to_int(info.get("duration_secs") or info.get("runtime"))
+        if v:
+            ms.duration_secs = v
+
+    if ms.bitrate is None:
+        v = _to_int(info.get("bitrate"))
+        if v:
+            ms.bitrate = v
+
+    # Opportunistic ffprobe-like blocks (not all providers return these).
+    video = _pick_default_video(info.get("video"))
+    if video:
+        if not ms.video_codec:
+            ms.video_codec = _safe_text(video.get("codec_name"), 20)
+        if ms.video_width is None:
+            ms.video_width = _to_int(video.get("width"))
+        if ms.video_height is None:
+            ms.video_height = _to_int(video.get("height"))
+
+    audio = _pick_default_audio(info.get("audio"))
+    if audio:
+        if not ms.audio_codec:
+            ms.audio_codec = _safe_text(audio.get("codec_name"), 20)
+        if ms.audio_channels is None:
+            ms.audio_channels = _to_int(audio.get("channels"))
+        if not ms.audio_channel_layout:
+            ms.audio_channel_layout = _safe_text(audio.get("channel_layout"), 50)
+
+
+def run_movie_details_sync(provider_id: int) -> dict:
+    """Background phase 3: per-movie get_vod_info enrichment.
+
+    Idempotent: only touches movie_streams rows where details_synced_at is NULL.
+    Sets details_synced_at on success; subsequent runs skip the row.
+    """
+    summary_local = {
+        "provider_id": provider_id,
+        "fetched": 0,
+        "failed": 0,
+        "errors": [],
+    }
+    db: Session = SessionLocal()
+    try:
+        provider = db.get(XtreamProvider, provider_id)
+        if provider is None:
+            summary_local["errors"].append(f"provider id={provider_id} not found")
+            return summary_local
+        creds = _resolve_master_credentials(db, provider)
+        if creds is None:
+            summary_local["errors"].append("no master credentials")
+            return summary_local
+
+        client = XtreamClient(provider.base_url, creds[0], creds[1])
+
+        rows = (
+            db.query(MovieStream)
+            .filter(MovieStream.provider_id == provider_id)
+            .filter(MovieStream.details_synced_at.is_(None))
+            .order_by(MovieStream.id)
+            .all()
+        )
+        total = len(rows)
+        logger.info("movie details: %d movies need enrichment for provider id=%s", total, provider_id)
+
+        pending = 0
+        for idx, ms in enumerate(rows):
+            if idx > 0 and idx % 200 == 0:
+                logger.info(
+                    "movie details progress: %d/%d  fetched=%d failed=%d",
+                    idx, total, summary_local["fetched"], summary_local["failed"],
+                )
+
+            resp = client.get_vod_info(ms.xtream_id)
+            if not resp:
+                summary_local["failed"] += 1
+                continue
+
+            info = resp.get("info") or {}
+            try:
+                _apply_vod_info_to_movie(ms, info)
+                ms.details_synced_at = datetime.utcnow()
+                summary_local["fetched"] += 1
+                pending += 1
+            except Exception as exc:
+                logger.warning("movie %s detail upsert failed: %s", ms.xtream_id, exc)
+                summary_local["errors"].append(f"movie {ms.xtream_id}: {exc}")
+                summary_local["failed"] += 1
+                db.rollback()
+                continue
+
+            if pending >= 100:
+                db.commit()
+                pending = 0
+
+        if pending:
+            db.commit()
+    except Exception as exc:
+        logger.exception("movie details sync failed for provider id=%s", provider_id)
+        summary_local["errors"].append(f"unhandled: {exc}")
+        db.rollback()
+    finally:
+        db.close()
+
+    logger.info("movie details done: %s", {k: v for k, v in summary_local.items() if k != "errors"})
+    return summary_local
+
+
+def trigger_movie_details_sync(provider_id: int) -> bool:
+    """Spawn movie details sync as a daemon thread."""
+    threading.Thread(
+        target=run_movie_details_sync,
+        args=(provider_id,),
+        name=f"movie-details-{provider_id}",
+        daemon=True,
+    ).start()
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Top-level entry
 # ---------------------------------------------------------------------------
 
@@ -889,6 +1086,11 @@ def run_catalog_sync(provider_id: int) -> dict:
         provider.last_refreshed_at = provider.last_synced_at
         provider.sync_started_at = None
         db.commit()
+
+        # Phase 3 — movie detail mining via Xtream get_vod_info — runs in
+        # its own background thread so this function returns quickly and the
+        # 24h scheduler isn't blocked on a 4-hour cold-start enrichment.
+        trigger_movie_details_sync(provider_id)
     except Exception as exc:
         logger.exception("Catalog sync failed for provider id=%s", provider_id)
         summary.errors.append(f"unhandled: {exc}")
