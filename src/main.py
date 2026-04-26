@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .routers import admin_providers, admin_sync, auth, play, subtitles
+from .routers import admin_providers, admin_sync, auth, catalog, me, play, subtitles
 from .services.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(
@@ -31,6 +31,8 @@ app = FastAPI(title="OTTAPI", version="0.1.0", lifespan=lifespan)
 app.include_router(admin_sync.router)
 app.include_router(admin_providers.router)
 app.include_router(auth.router)
+app.include_router(me.router)
+app.include_router(catalog.router)
 app.include_router(play.router)
 app.include_router(subtitles.router)
 

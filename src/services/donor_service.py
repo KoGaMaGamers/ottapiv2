@@ -137,7 +137,7 @@ def allocate_or_reuse(db: Session, owner: IPTVUser) -> Optional[Allocation]:
             IPTVUser.allocation_in_use == False,  # noqa: E712
             IPTVUser.allocation_lock_expires_at < now,
         ))
-        .order_by(IPTVUser.allocation_last_released_at.asc().nullsfirst())
+        .order_by(IPTVUser.allocation_last_released_at.asc())
         .all()
     )
     for slot in candidates:
