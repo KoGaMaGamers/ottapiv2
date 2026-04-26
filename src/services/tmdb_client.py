@@ -147,7 +147,11 @@ class TMDBClient:
 
             if not resp.ok:
                 logger.warning("TMDB GET %s HTTP %s: %s", endpoint, resp.status_code, resp.text[:200])
-                self._record_failure()
+                # 404 means the requested resource doesn't exist on TMDB (stale id,
+                # private/deleted entry) — not a sign that TMDB is unhealthy. Don't
+                # count it toward the circuit breaker; just cache the None and move on.
+                if resp.status_code != 404:
+                    self._record_failure()
                 with self._cache_lock:
                     self._cache[cache_key] = None
                 return None

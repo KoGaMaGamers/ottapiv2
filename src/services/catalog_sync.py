@@ -1021,6 +1021,16 @@ def run_movie_details_sync(provider_id: int) -> dict:
         db.close()
 
     logger.info("movie details done: %s", {k: v for k, v in summary_local.items() if k != "errors"})
+
+    # Phase 4 — TMDB enrichment. Chained sequentially (not in parallel) so it
+    # doesn't race with phase 3 on movie_streams updates. Lazy import to
+    # avoid a circular dependency at module load.
+    try:
+        from .tmdb_enrichment import run_tmdb_enrichment
+        run_tmdb_enrichment(provider_id)
+    except Exception:
+        logger.exception("chained TMDB enrichment failed for provider id=%s", provider_id)
+
     return summary_local
 
 
@@ -1090,13 +1100,10 @@ def run_catalog_sync(provider_id: int) -> dict:
         # Phase 3 — movie detail mining via Xtream get_vod_info — runs in
         # its own background thread so this function returns quickly and the
         # 24h scheduler isn't blocked on a 4-hour cold-start enrichment.
+        # Phase 4 (TMDB enrichment) is chained from inside that thread when
+        # phase 3 completes — running them in parallel deadlocks because
+        # both update movie_streams.
         trigger_movie_details_sync(provider_id)
-
-        # Phase 4 — TMDB enrichment (genre links + vote_average + popularity
-        # + original_language). Independent upstream, separate background
-        # thread, watermarked on tmdb_synced_at so re-runs are no-ops.
-        from .tmdb_enrichment import trigger_tmdb_enrichment
-        trigger_tmdb_enrichment(provider_id)
     except Exception as exc:
         logger.exception("Catalog sync failed for provider id=%s", provider_id)
         summary.errors.append(f"unhandled: {exc}")

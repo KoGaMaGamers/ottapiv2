@@ -358,13 +358,16 @@ def run_tmdb_enrichment(provider_id: int) -> Dict[str, Any]:
                 continue
             if ok:
                 summary["movies_enriched"] += 1
+                m.tmdb_synced_at = datetime.utcnow()
+                pending += 1
+                if pending >= 100:
+                    db.commit()
+                    pending = 0
             else:
+                # Don't set the watermark on miss — leave NULL so a future run
+                # can retry once data improves (e.g., upstream populates a tmdb_id,
+                # name parsing improves, TMDB adds the title).
                 summary["movies_failed"] += 1
-            m.tmdb_synced_at = datetime.utcnow()
-            pending += 1
-            if pending >= 100:
-                db.commit()
-                pending = 0
         if pending:
             db.commit()
 
@@ -393,13 +396,13 @@ def run_tmdb_enrichment(provider_id: int) -> Dict[str, Any]:
                 continue
             if ok:
                 summary["series_enriched"] += 1
+                s.tmdb_synced_at = datetime.utcnow()
+                pending += 1
+                if pending >= 100:
+                    db.commit()
+                    pending = 0
             else:
                 summary["series_failed"] += 1
-            s.tmdb_synced_at = datetime.utcnow()
-            pending += 1
-            if pending >= 100:
-                db.commit()
-                pending = 0
         if pending:
             db.commit()
 
