@@ -2,10 +2,15 @@ import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from ..config import CATALOG_SYNC_INTERVAL_HOURS, GOLDENOTT_SYNC_INTERVAL_HOURS
+from ..config import (
+    ALLOCATION_SWEEP_INTERVAL_SEC,
+    CATALOG_SYNC_INTERVAL_HOURS,
+    GOLDENOTT_SYNC_INTERVAL_HOURS,
+)
 from ..database import SessionLocal
 from ..models import XtreamProvider
 from .catalog_sync import run_catalog_sync
+from .donor_service import sweep_expired_locks
 from .goldenott_sync import run_sync as run_goldenott_sync
 
 logger = logging.getLogger(__name__)
@@ -65,11 +70,23 @@ def start_scheduler() -> None:
         coalesce=True,
         max_instances=1,
     )
+    _scheduler.add_job(
+        sweep_expired_locks,
+        trigger="interval",
+        seconds=ALLOCATION_SWEEP_INTERVAL_SEC,
+        id="allocation_sweeper",
+        name="Reclaim allocation locks past their TTL",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
 
     _scheduler.start()
     logger.info(
-        "Scheduler started: goldenott_sync every %dh, catalog_sync_all every %dh",
+        "Scheduler started: goldenott_sync every %dh, catalog_sync_all every %dh, "
+        "allocation_sweeper every %ds",
         GOLDENOTT_SYNC_INTERVAL_HOURS, CATALOG_SYNC_INTERVAL_HOURS,
+        ALLOCATION_SWEEP_INTERVAL_SEC,
     )
 
 

@@ -3,13 +3,13 @@ from datetime import datetime
 from typing import Literal, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import IPTVUser, XtreamProvider
-from ..services.auth_service import create_user_token
+from ..services.auth_service import create_user_token, get_user_from_token
 from ..services.catalog_sync import trigger_provider_sync
 from ..services.provider_service import match_or_create_provider, normalize_base_url
 from ..services.xtream_client import XtreamClient
@@ -17,6 +17,20 @@ from ..services.xtream_client import XtreamClient
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def get_current_user(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> IPTVUser:
+    """FastAPI dependency: verify Bearer token, return the IPTVUser row."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    token = authorization[7:].strip()
+    user = get_user_from_token(token, db)
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid or expired token")
+    return user
 
 
 class LoginRequest(BaseModel):
