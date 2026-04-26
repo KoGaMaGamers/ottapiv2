@@ -6,8 +6,10 @@ from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
-from ..config import GOLDENOTT_PROVIDER_ID
+from ..config import GOLDENOTT_API_KEY, GOLDENOTT_PROVIDER_ID
 from ..models import XtreamProvider
+from .goldenott_client import GoldenOTTClient
+from .goldenott_sync import _normalize_domain_to_url
 from .xtream_client import XtreamClient
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,36 @@ def _auth_succeeds(base_url: str, username: str, password: str) -> bool:
         return False
 
 
+def _refresh_goldenott_brand_domain(db: Session, brand: XtreamProvider) -> bool:
+    """Opportunistically refresh the GoldenOTT brand domain via /account/domains.
+
+    Updates ``brand.base_url`` in the session if the upstream-reported domain
+    differs. Returns True when a rotation was detected and applied. Cheap
+    one-call check; logs but doesn't raise on failure.
+    """
+    if not GOLDENOTT_API_KEY:
+        return False
+    try:
+        domains = GoldenOTTClient().get_domains()
+    except Exception as exc:
+        logger.warning("brand-domain refresh failed: %s", exc)
+        return False
+    if not domains:
+        return False
+    new_url = _normalize_domain_to_url(domains[0].get("domain") or "")
+    if not new_url:
+        return False
+    if normalize_base_url(brand.base_url or "") == normalize_base_url(new_url):
+        return False
+    logger.info(
+        "GoldenOTT brand domain rotated: %s -> %s (refreshed at login)",
+        brand.base_url, new_url,
+    )
+    brand.base_url = new_url
+    db.flush()
+    return True
+
+
 def match_or_create_provider(
     db: Session,
     client: XtreamClient,
@@ -86,13 +118,23 @@ def match_or_create_provider(
 
     if GOLDENOTT_PROVIDER_ID:
         brand = db.get(XtreamProvider, GOLDENOTT_PROVIDER_ID)
-        brand_url = normalize_base_url(brand.base_url) if brand and brand.base_url else ""
-        if brand_url and brand_url != norm and _auth_succeeds(brand_url, client.username, client.password):
-            logger.info(
-                "Login: creds for %s authed against brand domain %s -> provider id=%s",
-                client.username, brand_url, brand.id,
-            )
-            return brand, "brand_domain_auth"
+        if brand:
+            # Verify the stored brand domain hasn't rotated since last sync.
+            # If it has, update before probing — otherwise the probe would hit
+            # a dead host and we'd wrongly fall through to creating a new
+            # provider.
+            _refresh_goldenott_brand_domain(db, brand)
+            # If the user's host happens to BE the (possibly newly-refreshed)
+            # brand domain, treat as a URL match.
+            brand_url = normalize_base_url(brand.base_url) if brand.base_url else ""
+            if brand_url == norm:
+                return brand, "url"
+            if brand_url and _auth_succeeds(brand_url, client.username, client.password):
+                logger.info(
+                    "Login: creds for %s authed against brand domain %s -> provider id=%s",
+                    client.username, brand_url, brand.id,
+                )
+                return brand, "brand_domain_auth"
 
     fp, sample = compute_fingerprint(client)
     provider = XtreamProvider(
