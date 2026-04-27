@@ -8,34 +8,46 @@ import {
   onMount,
 } from "solid-js";
 import { useNavigate, useSearchParams } from "@solidjs/router";
-import { listMovieCategories, listMovies } from "../api/catalog";
-import type { FlatCategory, MovieListItem, MovieSort } from "../api/types";
+import {
+  listGenres,
+  listMovieCategories,
+  listMovies,
+} from "../api/catalog";
+import type { MovieListItem, MovieSort } from "../api/types";
 import HeroCarousel, { type HeroItem } from "../components/HeroCarousel";
 import PosterCard from "../components/PosterCard";
 import Rail from "../components/Rail";
 import Sidebar, { type SidebarItem } from "../components/Sidebar";
 import { useNavigationScope } from "../lib/navigation";
 import { isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
+import { sidebarOpen, setSidebarOpen } from "../lib/sidebarPrefs";
+import { authUser } from "../stores/auth";
 import { appShellZone, setAppShellZone } from "../stores/shell";
 
 /**
  * Movies listing.
  *
- *   ┌──── Sidebar ────┬──── Hero (top popular in category) ────┐
- *   │ All             │                                        │
- *   │ EN — LATEST     ├──── Rail: Most Popular ────────────────┤
- *   │ FR — LATEST     │                                        │
- *   │ EN — NETFLIX    │  Rail: Newest                          │
- *   │ ...             │                                        │
- *   │                 │  Rail: Top Rated                       │
- *   └─────────────────┴────────────────────────────────────────┘
+ *   ┌──── Sidebar ────┬──── Hero ────────────────────────┐
+ *   │ All movies      │                                  │
+ *   │ <Genres>* OR    │ Rail: Most Popular               │
+ *   │ <Categories>    │ Rail: Newest                     │
+ *   │                 │ Rail: Top Rated                  │
+ *   └─────────────────┴──────────────────────────────────┘
  *
- * One scope, four zones (sidebar / hero / rail-popular / rail-newest /
- * rail-rated). Moving up from the sidebar's first item OR the hero's
- * top edge bumps focus into the TopNav.
+ *   * Curated providers (view_mode = "curated"): TMDB genres from
+ *     /api/v1/genres → filter listings by `genre_id`.
+ *     Fallback providers: raw movie categories → filter by
+ *     `category_id`. Category sidebar is the legacy fallback for
+ *     unprocessed providers.
  *
- * Selected category persists in the URL (?category=ID) so reload and
- * back-nav remember it.
+ *   The selected filter id is stored in `?filter=ID` so reload + back-
+ *   nav remember it; the page interprets the id as `genre_id` or
+ *   `category_id` depending on view_mode.
+ *
+ *   The sidebar is collapsible. Pressing ← from the leftmost rail/hero
+ *   item opens it (focus moves to the sidebar's selected row); pressing
+ *   ← from the first sidebar item closes it (focus drops back into the
+ *   hero). State persists across pages and reload via localStorage.
  */
 
 const RAIL_PAGE_SIZE = 30;
@@ -47,7 +59,6 @@ const ZONES_RIGHT: Zone[] = ["hero", "rail-popular", "rail-newest", "rail-rated"
 function posterUrl(m: MovieListItem): string | null {
   return m.cover_big || m.stream_icon || null;
 }
-
 function backdropUrl(m: MovieListItem): string | null {
   return m.backdrop_path || m.cover_big || null;
 }
@@ -56,28 +67,43 @@ export default function MoviesPage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
 
-  const [categories] = createResource<FlatCategory[]>(() =>
-    listMovieCategories(),
+  const isCurated = () => authUser()?.view_mode === "curated";
+
+  const [genres] = createResource(
+    () => isCurated(),
+    (curated) => (curated ? listGenres() : Promise.resolve([])),
+  );
+  const [categories] = createResource(
+    () => !isCurated(),
+    (fallback) => (fallback ? listMovieCategories() : Promise.resolve([])),
   );
 
-  const selectedCategoryId = createMemo<number | undefined>(() => {
-    const raw = params.category;
+  const filterId = createMemo<number | undefined>(() => {
+    const raw = params.filter;
     if (!raw) return undefined;
     const n = Number(raw);
     return Number.isFinite(n) ? n : undefined;
   });
 
-  // Three rail-source resources, all keyed on the selected category id.
+  // Build filter args for the listing endpoints based on view_mode.
+  function makeFilterArgs(sort: MovieSort) {
+    const id = filterId();
+    if (id === undefined) return { sort };
+    return isCurated()
+      ? { sort, genre_id: id }
+      : { sort, category_id: id };
+  }
+
   const [popular] = createResource(
-    () => ({ category_id: selectedCategoryId(), sort: "popularity_desc" as MovieSort }),
+    () => makeFilterArgs("popularity_desc"),
     (k) => listMovies({ ...k, per_page: RAIL_PAGE_SIZE }),
   );
   const [newest] = createResource(
-    () => ({ category_id: selectedCategoryId(), sort: "added_desc" as MovieSort }),
+    () => makeFilterArgs("added_desc"),
     (k) => listMovies({ ...k, per_page: RAIL_PAGE_SIZE }),
   );
   const [topRated] = createResource(
-    () => ({ category_id: selectedCategoryId(), sort: "rating_desc" as MovieSort }),
+    () => makeFilterArgs("rating_desc"),
     (k) => listMovies({ ...k, per_page: RAIL_PAGE_SIZE }),
   );
 
@@ -85,7 +111,7 @@ export default function MoviesPage() {
   // Navigation state
   // -------------------------------------------------------------------------
 
-  const [zone, setZone] = createSignal<Zone>("sidebar");
+  const [zone, setZone] = createSignal<Zone>("hero");
   const [sidebarIdx, setSidebarIdx] = createSignal(0);
   const [heroIdx, setHeroIdx] = createSignal(0);
   const [popIdx, setPopIdx] = createSignal(0);
@@ -99,24 +125,26 @@ export default function MoviesPage() {
   createEffect(() => setActive(appShellZone() === "content"));
 
   const sidebarItems = createMemo<SidebarItem[]>(() => {
+    if (isCurated()) {
+      const gs = genres() ?? [];
+      return [
+        { id: "__all__", label: "All movies" },
+        ...gs.map((g) => ({ id: g.id, label: g.name })),
+      ];
+    }
     const cats = categories() ?? [];
     return [
       { id: "__all__", label: "All movies" },
-      ...cats.map((c) => ({
-        id: c.category_id,
-        label: c.name,
-      })),
+      ...cats.map((c) => ({ id: c.category_id, label: c.name })),
     ];
   });
 
-  // Sync sidebar selection ↔ URL (?category=ID)
+  // Sync sidebar index with URL filter id
   createEffect(() => {
     const items = sidebarItems();
-    const id = selectedCategoryId();
+    const id = filterId();
     const idx =
-      id === undefined
-        ? 0
-        : items.findIndex((it) => it.id === id);
+      id === undefined ? 0 : items.findIndex((it) => it.id === id);
     if (idx >= 0) setSidebarIdx(idx);
   });
 
@@ -124,12 +152,8 @@ export default function MoviesPage() {
     const item = sidebarItems()[idx];
     if (!item) return;
     setSidebarIdx(idx);
-    if (item.id === "__all__") {
-      setParams({ category: undefined });
-    } else {
-      setParams({ category: String(item.id) });
-    }
-    // Reset rail positions on category switch
+    if (item.id === "__all__") setParams({ filter: undefined });
+    else setParams({ filter: String(item.id) });
     setHeroIdx(0);
     setPopIdx(0);
     setNewIdx(0);
@@ -176,7 +200,6 @@ export default function MoviesPage() {
       pickSidebar(next);
       return;
     }
-    // Right column: cycle through right zones
     const idx = ZONES_RIGHT.indexOf(cur);
     const next = idx + delta;
     if (next < 0) {
@@ -190,52 +213,53 @@ export default function MoviesPage() {
   function moveHorizontal(delta: 1 | -1) {
     const cur = zone();
     if (cur === "sidebar") {
-      // Right arrow: jump into right column at hero
-      if (delta > 0) setZone("hero");
+      // ← on first sidebar item closes the sidebar and returns to hero
+      if (delta < 0) {
+        setSidebarOpen(false);
+        setZone("hero");
+        return;
+      }
+      // → from sidebar jumps into hero
+      setZone("hero");
       return;
     }
-    // hero / rails — left arrow at index 0 jumps back to sidebar
     if (cur === "hero") {
       const total = heroItems().length;
-      if (total === 0) {
-        if (delta < 0) setZone("sidebar");
-        return;
-      }
-      if (delta < 0 && heroIdx() === 0) {
+      // ← at index 0 of hero opens the sidebar (and lands on its current row)
+      if (delta < 0 && (total === 0 || heroIdx() === 0)) {
+        setSidebarOpen(true);
         setZone("sidebar");
         return;
       }
-      setHeroIdx((i) => (i + delta + total) % total); // hero wraps
-    } else {
-      const [getter, setter, items] = (() => {
-        switch (cur) {
-          case "rail-popular":
-            return [popIdx, setPopIdx, popular()?.items ?? []] as const;
-          case "rail-newest":
-            return [newIdx, setNewIdx, newest()?.items ?? []] as const;
-          case "rail-rated":
-            return [ratIdx, setRatIdx, topRated()?.items ?? []] as const;
-          default:
-            return [() => 0, () => {}, [] as MovieListItem[]] as const;
-        }
-      })();
-      if (items.length === 0) {
-        if (delta < 0) setZone("sidebar");
-        return;
-      }
-      if (delta < 0 && getter() === 0) {
-        setZone("sidebar");
-        return;
-      }
-      (setter as (n: number) => void)(
-        Math.min(Math.max(getter() + delta, 0), items.length - 1),
-      );
+      if (total === 0) return;
+      setHeroIdx((i) => (i + delta + total) % total);
+      return;
     }
+    const [getter, setter, items] = (() => {
+      switch (cur) {
+        case "rail-popular":
+          return [popIdx, setPopIdx, popular()?.items ?? []] as const;
+        case "rail-newest":
+          return [newIdx, setNewIdx, newest()?.items ?? []] as const;
+        case "rail-rated":
+          return [ratIdx, setRatIdx, topRated()?.items ?? []] as const;
+        default:
+          return [() => 0, () => {}, [] as MovieListItem[]] as const;
+      }
+    })();
+    if (delta < 0 && (items.length === 0 || getter() === 0)) {
+      setSidebarOpen(true);
+      setZone("sidebar");
+      return;
+    }
+    (setter as (n: number) => void)(
+      Math.min(Math.max(getter() + delta, 0), items.length - 1),
+    );
   }
 
   function activate() {
     const cur = zone();
-    if (cur === "sidebar") return; // sidebar selection happens on focus change
+    if (cur === "sidebar") return;
     if (cur === "hero") {
       const item = heroItems()[heroIdx()];
       if (item) navigate(`/movies/${item.id}`);
@@ -284,20 +308,25 @@ export default function MoviesPage() {
 
   return (
     <div class="flex h-[calc(100vh-49px)]">
-      <Sidebar
-        title="Categories"
-        items={sidebarItems()}
-        activeId={() =>
-          selectedCategoryId() === undefined
-            ? "__all__"
-            : selectedCategoryId()!
-        }
-        focusedIdx={sidebarIdx}
-        isFocused={() => zone() === "sidebar"}
-        onSelect={(_, i) => pickSidebar(i)}
-      />
+      <Show when={sidebarOpen()}>
+        <Sidebar
+          title={isCurated() ? "Genres" : "Categories"}
+          items={sidebarItems()}
+          activeId={() => (filterId() === undefined ? "__all__" : filterId()!)}
+          focusedIdx={sidebarIdx}
+          isFocused={() => zone() === "sidebar"}
+          onSelect={(_, i) => pickSidebar(i)}
+        />
+      </Show>
 
-      <div class="flex-1 overflow-y-auto">
+      <div class="flex-1 overflow-y-auto relative">
+        {/* Closed-sidebar hint — small affordance so user knows ← opens it */}
+        <Show when={!sidebarOpen()}>
+          <div class="absolute top-3 left-3 z-10 text-[11px] text-zinc-600 select-none pointer-events-none">
+            ← filters
+          </div>
+        </Show>
+
         <Show
           when={heroItems().length > 0}
           fallback={
@@ -314,9 +343,7 @@ export default function MoviesPage() {
             onIndexChange={setHeroIdx}
             paused={() => zone() === "hero"}
             isFocused={() => zone() === "hero"}
-            actions={[
-              { label: "Open", primary: true, onClick: activate },
-            ]}
+            actions={[{ label: "Open", primary: true, onClick: activate }]}
           />
         </Show>
 
@@ -336,9 +363,7 @@ export default function MoviesPage() {
                   <>
                     {item.year && <span>{item.year}</span>}
                     {item.tmdb_vote_average != null && (
-                      <span class="ml-2">
-                        ★ {item.tmdb_vote_average.toFixed(1)}
-                      </span>
+                      <span class="ml-2">★ {item.tmdb_vote_average.toFixed(1)}</span>
                     )}
                   </>
                 }

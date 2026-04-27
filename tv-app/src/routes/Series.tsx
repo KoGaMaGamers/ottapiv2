@@ -8,20 +8,27 @@ import {
   onMount,
 } from "solid-js";
 import { useNavigate, useSearchParams } from "@solidjs/router";
-import { listSerieCategories, listSeries } from "../api/catalog";
-import type { FlatCategory, SeriesListItem, SeriesSort } from "../api/types";
+import {
+  listGenres,
+  listSerieCategories,
+  listSeries,
+} from "../api/catalog";
+import type { SeriesListItem, SeriesSort } from "../api/types";
 import HeroCarousel, { type HeroItem } from "../components/HeroCarousel";
 import PosterCard from "../components/PosterCard";
 import Rail from "../components/Rail";
 import Sidebar, { type SidebarItem } from "../components/Sidebar";
 import { useNavigationScope } from "../lib/navigation";
 import { isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
+import { sidebarOpen, setSidebarOpen } from "../lib/sidebarPrefs";
+import { authUser } from "../stores/auth";
 import { appShellZone, setAppShellZone } from "../stores/shell";
 
 /**
- * Series listing — same shape as MoviesPage but with series sorts:
- * popularity_desc / last_modified_desc / rating_desc. Sidebar uses
- * /api/v1/categories/series.
+ * Series listing — same shape as MoviesPage. Curated providers see
+ * TMDB genres in the sidebar; fallback providers see series categories.
+ * Sidebar is collapsible and the open/closed state is shared with
+ * Movies via lib/sidebarPrefs.
  */
 
 const RAIL_PAGE_SIZE = 30;
@@ -41,29 +48,44 @@ export default function SeriesPage() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
 
-  const [categories] = createResource<FlatCategory[]>(() => listSerieCategories());
+  const isCurated = () => authUser()?.view_mode === "curated";
 
-  const selectedCategoryId = createMemo<number | undefined>(() => {
-    const raw = params.category;
+  const [genres] = createResource(
+    () => isCurated(),
+    (curated) => (curated ? listGenres() : Promise.resolve([])),
+  );
+  const [categories] = createResource(
+    () => !isCurated(),
+    (fallback) => (fallback ? listSerieCategories() : Promise.resolve([])),
+  );
+
+  const filterId = createMemo<number | undefined>(() => {
+    const raw = params.filter;
     if (!raw) return undefined;
     const n = Number(raw);
     return Number.isFinite(n) ? n : undefined;
   });
 
+  function makeFilterArgs(sort: SeriesSort) {
+    const id = filterId();
+    if (id === undefined) return { sort };
+    return isCurated() ? { sort, genre_id: id } : { sort, category_id: id };
+  }
+
   const [popular] = createResource(
-    () => ({ category_id: selectedCategoryId(), sort: "popularity_desc" as SeriesSort }),
+    () => makeFilterArgs("popularity_desc"),
     (k) => listSeries({ ...k, per_page: RAIL_PAGE_SIZE }),
   );
   const [newest] = createResource(
-    () => ({ category_id: selectedCategoryId(), sort: "last_modified_desc" as SeriesSort }),
+    () => makeFilterArgs("last_modified_desc"),
     (k) => listSeries({ ...k, per_page: RAIL_PAGE_SIZE }),
   );
   const [topRated] = createResource(
-    () => ({ category_id: selectedCategoryId(), sort: "rating_desc" as SeriesSort }),
+    () => makeFilterArgs("rating_desc"),
     (k) => listSeries({ ...k, per_page: RAIL_PAGE_SIZE }),
   );
 
-  const [zone, setZone] = createSignal<Zone>("sidebar");
+  const [zone, setZone] = createSignal<Zone>("hero");
   const [sidebarIdx, setSidebarIdx] = createSignal(0);
   const [heroIdx, setHeroIdx] = createSignal(0);
   const [popIdx, setPopIdx] = createSignal(0);
@@ -77,6 +99,13 @@ export default function SeriesPage() {
   createEffect(() => setActive(appShellZone() === "content"));
 
   const sidebarItems = createMemo<SidebarItem[]>(() => {
+    if (isCurated()) {
+      const gs = genres() ?? [];
+      return [
+        { id: "__all__", label: "All series" },
+        ...gs.map((g) => ({ id: g.id, label: g.name })),
+      ];
+    }
     const cats = categories() ?? [];
     return [
       { id: "__all__", label: "All series" },
@@ -86,9 +115,8 @@ export default function SeriesPage() {
 
   createEffect(() => {
     const items = sidebarItems();
-    const id = selectedCategoryId();
-    const idx =
-      id === undefined ? 0 : items.findIndex((it) => it.id === id);
+    const id = filterId();
+    const idx = id === undefined ? 0 : items.findIndex((it) => it.id === id);
     if (idx >= 0) setSidebarIdx(idx);
   });
 
@@ -96,8 +124,8 @@ export default function SeriesPage() {
     const item = sidebarItems()[idx];
     if (!item) return;
     setSidebarIdx(idx);
-    if (item.id === "__all__") setParams({ category: undefined });
-    else setParams({ category: String(item.id) });
+    if (item.id === "__all__") setParams({ filter: undefined });
+    else setParams({ filter: String(item.id) });
     setHeroIdx(0);
     setPopIdx(0);
     setNewIdx(0);
@@ -146,19 +174,22 @@ export default function SeriesPage() {
   function moveHorizontal(delta: 1 | -1) {
     const cur = zone();
     if (cur === "sidebar") {
-      if (delta > 0) setZone("hero");
+      if (delta < 0) {
+        setSidebarOpen(false);
+        setZone("hero");
+        return;
+      }
+      setZone("hero");
       return;
     }
     if (cur === "hero") {
       const total = heroItems().length;
-      if (total === 0) {
-        if (delta < 0) setZone("sidebar");
-        return;
-      }
-      if (delta < 0 && heroIdx() === 0) {
+      if (delta < 0 && (total === 0 || heroIdx() === 0)) {
+        setSidebarOpen(true);
         setZone("sidebar");
         return;
       }
+      if (total === 0) return;
       setHeroIdx((i) => (i + delta + total) % total);
       return;
     }
@@ -174,11 +205,8 @@ export default function SeriesPage() {
           return [() => 0, () => {}, [] as SeriesListItem[]] as const;
       }
     })();
-    if (items.length === 0) {
-      if (delta < 0) setZone("sidebar");
-      return;
-    }
-    if (delta < 0 && getter() === 0) {
+    if (delta < 0 && (items.length === 0 || getter() === 0)) {
+      setSidebarOpen(true);
       setZone("sidebar");
       return;
     }
@@ -238,18 +266,24 @@ export default function SeriesPage() {
 
   return (
     <div class="flex h-[calc(100vh-49px)]">
-      <Sidebar
-        title="Categories"
-        items={sidebarItems()}
-        activeId={() =>
-          selectedCategoryId() === undefined ? "__all__" : selectedCategoryId()!
-        }
-        focusedIdx={sidebarIdx}
-        isFocused={() => zone() === "sidebar"}
-        onSelect={(_, i) => pickSidebar(i)}
-      />
+      <Show when={sidebarOpen()}>
+        <Sidebar
+          title={isCurated() ? "Genres" : "Categories"}
+          items={sidebarItems()}
+          activeId={() => (filterId() === undefined ? "__all__" : filterId()!)}
+          focusedIdx={sidebarIdx}
+          isFocused={() => zone() === "sidebar"}
+          onSelect={(_, i) => pickSidebar(i)}
+        />
+      </Show>
 
-      <div class="flex-1 overflow-y-auto">
+      <div class="flex-1 overflow-y-auto relative">
+        <Show when={!sidebarOpen()}>
+          <div class="absolute top-3 left-3 z-10 text-[11px] text-zinc-600 select-none pointer-events-none">
+            ← filters
+          </div>
+        </Show>
+
         <Show
           when={heroItems().length > 0}
           fallback={
