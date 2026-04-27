@@ -4,6 +4,7 @@ import { authToken } from "./stores/auth";
 import { bootstrap } from "./api/auth";
 import AppShell from "./components/AppShell";
 import Login from "./routes/Login";
+import Home from "./routes/Home";
 
 /**
  * Top-level router shell.
@@ -61,10 +62,7 @@ export default function App() {
         <Route path="/login" component={Login} />
 
         <Route path="/" component={AppShell}>
-          <Route
-            path="/home"
-            component={() => <PortPending source="HomePage.jsx" />}
-          />
+          <Route path="/home" component={Home} />
           <Route
             path="/movies"
             component={() => <PortPending source="MoviesPage.jsx" />}

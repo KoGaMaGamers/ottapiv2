@@ -1,0 +1,193 @@
+/*
+ * home.css — lifted verbatim from the legacy React TV app
+ * (`/var/www/ottapi/tv_app_v2/src/App.css` 422–446, 779–842, 977–1020,
+ * 1251, 5069–5111).
+ *
+ * Coupled to routes/Home.tsx + the per-row mc-card sizing.
+ */
+
+/* ── Page shell ─────────────────────────────────────────────────────────── */
+.home-page {
+    height: 100vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: #080808;
+    padding-top: 0;
+    scrollbar-width: none;
+}
+.home-page::-webkit-scrollbar { display: none; }
+
+/* ── Loading ─────────────────────────────────────────────────────────────── */
+.hp-loading {
+    height: 80vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.hp-spinner {
+    width: 52px;
+    height: 52px;
+    border: 3px solid rgba(229, 9, 20, 0.15);
+    border-top-color: #e50914;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ── Rows ────────────────────────────────────────────────────────────────── */
+.hp-rows  { padding: 8px 0 20px; }
+.hp-row   { margin-bottom: 38px; }
+
+.hp-row-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4%;
+    margin-bottom: 14px;
+    background: transparent;
+}
+.hp-row-title {
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: rgba(255,255,255,0.85);
+    margin: 0;
+    background: transparent;
+    letter-spacing: 0.2px;
+    transition: color 0.2s;
+}
+.hp-row.row-focused .hp-row-title { color: #e50914; }
+
+.hp-row-more {
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.35);
+    font-size: 0.88rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 0.2s;
+    padding: 4px 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.hp-row-more:hover { color: #e50914; }
+.hp-row-more-arrow { font-size: 1.1rem; transition: transform 0.2s; }
+.hp-row-more:hover .hp-row-more-arrow { transform: translateX(3px); }
+
+/*
+ * Padding trick: content within the padding box is NOT clipped by overflow.
+ * This allows movie expanded panels to pop upward without being cut off,
+ * while horizontal scroll still works normally.
+ */
+.hp-row-scroll {
+    overflow-x: auto;
+    padding-top: 110px;
+    margin-top:  -110px;
+    padding-left:  4%;
+    padding-right: 4%;
+    padding-bottom: 16px;
+    scroll-padding-left: 4%;
+    scrollbar-width: none;
+}
+.hp-row-scroll::-webkit-scrollbar { display: none; }
+
+.hp-row-track {
+    display: flex;
+    gap: 9px;
+    width: max-content;
+    align-items: flex-end;
+}
+
+/* ── Error states ────────────────────────────────────────────────────────── */
+.hp-loading-text { opacity: 0.5; font-style: italic; }
+.hp-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 60vh;
+    color: rgba(255,255,255,0.45);
+    gap: 10px;
+    font-size: 1.1rem;
+}
+.hp-error small { font-size: 0.8rem; color: rgba(255,255,255,0.28); }
+
+/* ── Play error toast ────────────────────────────────────────────────────── */
+.hp-play-toast {
+    position: fixed;
+    bottom: 32px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(20, 6, 6, 0.96);
+    border: 1px solid rgba(229, 9, 20, 0.55);
+    border-radius: 10px;
+    padding: 14px 20px;
+    max-width: min(90vw, 560px);
+    box-shadow: 0 8px 40px rgba(0,0,0,0.7);
+    backdrop-filter: blur(14px);
+    animation: toastIn 0.25s ease;
+    cursor: pointer;
+}
+@keyframes toastIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+.hp-play-toast-icon { font-size: 1.2rem; flex-shrink: 0; color: #e50914; }
+.hp-play-toast-msg  { font-size: 0.88rem; color: rgba(255,255,255,0.82); flex: 1; line-height: 1.4; }
+.hp-play-toast-close {
+    background: none; border: none; color: rgba(255,255,255,0.35);
+    font-size: 0.9rem; cursor: pointer; padding: 0 2px; flex-shrink: 0;
+}
+.hp-play-toast-close:hover { color: #fff; }
+
+.hp-footer-spacer { height: 60px; }
+
+/* ── Per-row card sizing (App.css 5069–5111) ─────────────────────────────── */
+.home-page .hp-row-scroll {
+    padding-top: 28px !important;
+    margin-top: -28px !important;
+}
+.home-page .hp-row-track {
+    gap: 6px !important;
+}
+.home-page .hp-row {
+    margin-bottom: 28px;
+}
+.home-page .hp-row-track > .mc-card {
+    flex: 0 0 auto;
+}
+.home-page .hp-row-track > .mc-card.mc-card--movie {
+    width: 176px;
+}
+.home-page .hp-row-track > .mc-card.mc-card--series {
+    width: 112px;
+}
+.home-page .hp-row-track > .mc-card.mc-card--live {
+    width: 84px;
+}
+/* Continue Watching row: keep mixed movie/series posters uniform by height. */
+.home-page .hp-row--continue .hp-row-track > .mc-card {
+    width: auto;
+}
+.home-page .hp-row--continue .hp-row-track > .mc-card .mc-media {
+    height: clamp(112px, 13vh, 136px);
+}
+
+/* tv-mode perf overrides (App.css 4236, 4269, 4294) */
+.tv-mode .hp-play-toast {
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+    background: rgba(20, 20, 20, 0.95);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+.tv-mode .hp-row-more {
+    transition: opacity 0.15s ease, color 0.15s ease;
+}
+.tv-mode .hp-row-inner {
+    will-change: transform;
+}
