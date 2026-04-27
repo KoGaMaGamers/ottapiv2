@@ -1,523 +1,483 @@
 /**
- * SeriesDetail — full-page series detail (header banner + season tabs +
- * episode list).
+ * Series detail page — restored from the pre-revert design.
  *
- * Faithful Solid port of the legacy SeriesDetailModal embedded in
- * `tv_app_v2/src/pages/SeriesPage.jsx` (LOC 776-1162), converted from
- * a slide-up modal to a dedicated route at `/series/:id` per the
- * user's preference. The internal layout (header banner, seasons bar,
- * episode list, EpisodeRow) is unchanged — only the wrapper changes
- * from `.sp-modal-backdrop > .sp-modal-panel` to
- * `.series-detail-page`.
+ *   ┌── Backdrop fade ──────────────────────────────────────┐
+ *   │  Cover + title + year/runtime/rating + plot           │
+ *   │  Cast + director                                      │
+ *   │  [+ Watchlist]  [Back]                                │
+ *   ├──── Seasons (chip row) ───────────────────────────────┤
+ *   │  [Specials] [Season 1] [Season 2] ...                 │
+ *   ├──── Episodes (horizontal cards) ──────────────────────┤
+ *   │  ┌──────┐ ┌──────┐ ┌──────┐                           │
+ *   │  │ S1E1 │ │ S1E2 │ │ S1E3 │                           │
+ *   │  └──────┘ └──────┘ └──────┘                           │
+ *   └───────────────────────────────────────────────────────┘
  *
- * Keyboard model:
- *   ←/→            previous / next season (when focus is in episode list)
- *   ↑ at first ep   move focus to action buttons
- *   ↑/↓ in actions  no-op on row, ←/→ switches Play / Watchlist
- *   ↓ from actions  return focus to episode list
- *   Enter           play focused episode (or fire focused action)
- *   Esc / Back      navigate back
- *
- * Watchlist + playback-progress bars are wired but inert — both stores
- * are pending separate ports. Play handler logs to console until the
- * MediaPlayer + heartbeat layer ports.
+ * Three D-pad zones: actions → seasons → episodes (top→bottom). Up at
+ * actions hands focus to TopNav via appShellZone. Selecting a season
+ * chip with ←/→ auto-loads its episodes — no Enter required (matches
+ * Netflix-style instant feedback). Enter on an episode card stubs Play
+ * (logs to console) until MediaPlayer + heartbeat ports.
  */
 
 import {
-  createSignal,
-  createMemo,
   createEffect,
+  createMemo,
   createResource,
-  on,
-  onCleanup,
-  Show,
+  createSignal,
   For,
-  type JSX,
+  onCleanup,
+  onMount,
+  Show,
 } from "solid-js";
-import { useNavigate, useParams } from "@solidjs/router";
-import { getSeries, getSeasonEpisodes } from "../api/catalog";
-import type {
-  EpisodeOut,
-  SeasonOut,
-  SeriesDetail as SeriesDetailDTO,
-} from "../api/types";
+import { useParams } from "@solidjs/router";
+import { getSeasonEpisodes, getSeries } from "../api/catalog";
+import type { EpisodeOut, SeasonOut } from "../api/types";
 import { useNavigationScope } from "../lib/navigation";
-import { getGradient, getAccent } from "../lib/gradient";
+import { isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
+import { appShellZone, setAppShellZone } from "../stores/shell";
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+type Zone = "actions" | "seasons" | "episodes";
+const ZONES: Zone[] = ["actions", "seasons", "episodes"];
 
-export default function SeriesDetail(): JSX.Element {
+const ACTIONS: { key: string; label: string }[] = [
+  { key: "watchlist", label: "+ Watchlist" },
+  { key: "back", label: "Back" },
+];
+
+function fmtDuration(secs?: number | null): string | null {
+  if (!secs || secs <= 0) return null;
+  const m = Math.round(secs / 60);
+  if (m < 60) return `${m} min`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+function epLabel(ep: EpisodeOut): string {
+  const s = `S${String(ep.season_number).padStart(2, "0")}`;
+  const e = `E${String(ep.episode_num).padStart(2, "0")}`;
+  return `${s}${e}`;
+}
+
+export default function SeriesDetail() {
   const params = useParams<{ id: string }>();
-  const navigate = useNavigate();
-  const { isScopeOwner } = useNavigationScope("page:series-detail", {
-    active: true,
-    priority: 60,
-  });
 
-  const seriesId = createMemo(() => Number(params.id));
-
-  // Series detail (includes seasons[])
-  const [series] = createResource<SeriesDetailDTO | null, number>(
-    seriesId,
-    (id) => getSeries(id).catch(() => null),
+  const [series] = createResource(
+    () => Number(params.id),
+    (id) => getSeries(id),
   );
 
-  // Selected season number
+  // Active season is a season_number (not an index) since legacy may have
+  // season 0 = Specials. Default to first available season once data lands.
   const [activeSeason, setActiveSeason] = createSignal<number | null>(null);
 
-  // Episodes for the active season
-  const [episodes] = createResource<
-    EpisodeOut[],
-    { id: number; season: number | null }
-  >(
-    () => ({ id: seriesId(), season: activeSeason() }),
-    async ({ id, season }) => {
-      if (season == null) return [] as EpisodeOut[];
-      try {
-        return await getSeasonEpisodes(id, season);
-      } catch {
-        return [] as EpisodeOut[];
-      }
-    },
-  );
-
-  // Set the initial active season once the detail loads (lowest season number)
-  createEffect(
-    on(series, (s) => {
-      if (!s || !s.seasons || s.seasons.length === 0) return;
-      const lowest = s.seasons.reduce(
-        (a, b) => (a.season_number <= b.season_number ? a : b),
+  createEffect(() => {
+    const s = series();
+    if (s && activeSeason() === null && s.seasons.length > 0) {
+      const sorted = [...s.seasons].sort(
+        (a, b) => a.season_number - b.season_number,
       );
-      setActiveSeason((cur) => cur ?? lowest.season_number);
-    }),
-  );
-
-  // Focus state
-  const [focusZone, setFocusZone] = createSignal<"actions" | "episodes">(
-    "episodes",
-  );
-  const [actionIdx, setActionIdx] = createSignal(0); // 0=play, 1=watchlist
-  const [focusedEpIdx, setFocusedEpIdx] = createSignal(0);
-  const [playError, setPlayError] = createSignal<string | null>(null);
-
-  // Reset episode focus + scroll-top whenever the active season changes
-  createEffect(
-    on(activeSeason, () => {
-      setFocusedEpIdx(0);
-      queueMicrotask(() => {
-        if (episodesRef) episodesRef.scrollTop = 0;
-      });
-    }, { defer: true }),
-  );
-
-  // Auto-dismiss play error
-  createEffect(
-    on(playError, (msg) => {
-      if (!msg) return;
-      const t = window.setTimeout(() => setPlayError(null), 5000);
-      onCleanup(() => clearTimeout(t));
-    }),
-  );
-
-  // Refs
-  let episodesRef: HTMLDivElement | undefined;
-
-  // Auto-scroll the focused episode into view
-  createEffect(() => {
-    if (!episodesRef) return;
-    const i = focusedEpIdx();
-    queueMicrotask(() => {
-      const el = episodesRef?.querySelector(
-        `[data-ep-idx="${i}"]`,
-      ) as HTMLElement | null;
-      el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    });
+      setActiveSeason(sorted[0].season_number);
+    }
   });
 
-  // Stub play handler until MediaPlayer ports
-  const handlePlayEpisode = (ep: EpisodeOut) => {
-    console.log("[SeriesDetail] play episode", {
-      seriesId: seriesId(),
-      season: activeSeason(),
-      episode: ep.episode_num,
-      epId: ep.id,
-    });
-  };
-
-  // Keyboard handler
-  createEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!isScopeOwner()) return;
-
-      if (e.key === "Escape" || e.key === "Backspace") {
-        e.preventDefault();
-        navigate(-1);
-        return;
-      }
-
-      const NAV = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"];
-      if (!NAV.includes(e.key)) return;
-      e.preventDefault();
-
-      const seasonsList = series()?.seasons ?? [];
-      const epList = episodes() ?? [];
-
-      if (focusZone() === "actions") {
-        if (e.key === "ArrowLeft") {
-          setActionIdx((i) => Math.max(0, i - 1));
-        } else if (e.key === "ArrowRight") {
-          setActionIdx((i) => Math.min(1, i + 1));
-        } else if (e.key === "ArrowDown") {
-          setFocusZone("episodes");
-        } else if (e.key === "Enter") {
-          if (actionIdx() === 0) {
-            const ep = epList[focusedEpIdx()] ?? epList[0];
-            if (ep) handlePlayEpisode(ep);
-          }
-          // Watchlist no-op until store is ported
-        }
-        return;
-      }
-
-      // focusZone === 'episodes'
-      if (e.key === "ArrowLeft") {
-        const idx = seasonsList.findIndex(
-          (s) => s.season_number === activeSeason(),
-        );
-        if (idx > 0) setActiveSeason(seasonsList[idx - 1].season_number);
-      } else if (e.key === "ArrowRight") {
-        const idx = seasonsList.findIndex(
-          (s) => s.season_number === activeSeason(),
-        );
-        if (idx >= 0 && idx < seasonsList.length - 1) {
-          setActiveSeason(seasonsList[idx + 1].season_number);
-        }
-      } else if (e.key === "ArrowUp") {
-        if (focusedEpIdx() === 0) setFocusZone("actions");
-        else setFocusedEpIdx((p) => Math.max(p - 1, 0));
-      } else if (e.key === "ArrowDown") {
-        setFocusedEpIdx((p) => Math.min(p + 1, epList.length - 1));
-      } else if (e.key === "Enter") {
-        const ep = epList[focusedEpIdx()];
-        if (ep) handlePlayEpisode(ep);
-      }
-    };
-    window.addEventListener("keydown", handler, true);
-    onCleanup(() => window.removeEventListener("keydown", handler, true));
+  const seasons = createMemo<SeasonOut[]>(() => {
+    const s = series();
+    if (!s) return [];
+    return [...s.seasons].sort((a, b) => a.season_number - b.season_number);
   });
 
-  // Render-derived
-  const poster = () => series()?.cover ?? null;
-  const backdrop = () => series()?.backdrop_path ?? null;
+  const [episodes] = createResource(
+    () => {
+      const sn = activeSeason();
+      const sid = Number(params.id);
+      if (sn === null) return null;
+      return { sid, sn };
+    },
+    (k) =>
+      k ? getSeasonEpisodes(k.sid, k.sn) : Promise.resolve([] as EpisodeOut[]),
+  );
+
+  // ---------------------------------------------------------------------------
+  // Navigation state
+  // ---------------------------------------------------------------------------
+
+  const [zone, setZone] = createSignal<Zone>("actions");
+  const [actionIdx, setActionIdx] = createSignal(0);
+  const [episodeIdx, setEpisodeIdx] = createSignal(0);
+
+  // Reset episode index when the season changes.
+  createEffect(() => {
+    activeSeason();
+    setEpisodeIdx(0);
+  });
+
+  const seasonIdx = createMemo<number>(() => {
+    const sn = activeSeason();
+    if (sn === null) return 0;
+    return Math.max(seasons().findIndex((s) => s.season_number === sn), 0);
+  });
+
+  const { isScopeOwner, setActive } = useNavigationScope("series-detail", {
+    priority: 30,
+    active: appShellZone() === "content",
+  });
+  createEffect(() => setActive(appShellZone() === "content"));
+
+  function moveVertical(delta: 1 | -1) {
+    const idx = ZONES.indexOf(zone());
+    const next = idx + delta;
+    if (next < 0) {
+      setAppShellZone("nav");
+      return;
+    }
+    if (next >= ZONES.length) return;
+    setZone(ZONES[next]);
+  }
+
+  function moveHorizontal(delta: 1 | -1) {
+    const cur = zone();
+    if (cur === "actions") {
+      setActionIdx((i) =>
+        Math.min(Math.max(i + delta, 0), ACTIONS.length - 1),
+      );
+      return;
+    }
+    if (cur === "seasons") {
+      const ss = seasons();
+      if (ss.length === 0) return;
+      const nextIdx = Math.min(
+        Math.max(seasonIdx() + delta, 0),
+        ss.length - 1,
+      );
+      setActiveSeason(ss[nextIdx].season_number);
+      return;
+    }
+    // episodes
+    const eps = episodes() ?? [];
+    if (eps.length === 0) return;
+    setEpisodeIdx((i) => Math.min(Math.max(i + delta, 0), eps.length - 1));
+  }
+
+  function activate() {
+    const cur = zone();
+    if (cur === "actions") {
+      const a = ACTIONS[actionIdx()];
+      if (!a) return;
+      switch (a.key) {
+        case "watchlist":
+          // eslint-disable-next-line no-console
+          console.info("[series-detail] watchlist toggle (deferred)");
+          break;
+        case "back":
+          history.back();
+          break;
+      }
+      return;
+    }
+    if (cur === "seasons") return; // selection is auto on ←/→
+    // episodes
+    const eps = episodes() ?? [];
+    const ep = eps[episodeIdx()];
+    if (ep) {
+      // eslint-disable-next-line no-console
+      console.info(
+        "[series-detail] play would invoke /api/v1/play/episode/" + ep.id,
+      );
+    }
+  }
+
+  function onKey(e: KeyboardEvent) {
+    if (!isScopeOwner()) return;
+    if (!isDirectionalKey(e.key) && !isSelectKey(e.key)) return;
+    e.preventDefault();
+    switch (e.key) {
+      case "ArrowUp":
+        moveVertical(-1);
+        break;
+      case "ArrowDown":
+        moveVertical(1);
+        break;
+      case "ArrowLeft":
+        moveHorizontal(-1);
+        break;
+      case "ArrowRight":
+        moveHorizontal(1);
+        break;
+      case "Enter":
+      case " ":
+        activate();
+        break;
+    }
+  }
+
+  onMount(() => window.addEventListener("keydown", onKey));
+  onCleanup(() => window.removeEventListener("keydown", onKey));
 
   return (
     <Show
       when={series()}
       fallback={
-        <div class="series-detail-page">
-          <div class="sp-browser-loading">
-            <div class="hp-spinner" />
-          </div>
+        <div class="h-[60vh] flex items-center justify-center text-zinc-500 text-sm">
+          <Show when={series.loading} fallback={<span>Series not found.</span>}>
+            Loading series…
+          </Show>
         </div>
       }
     >
-      {(s) => (
-        <div class="series-detail-page">
-          <div
-            class="sp-modal-header"
-            style={{ "--accent": getAccent(s().name) } as JSX.CSSProperties}
-          >
-            <div
-              class="sp-modal-bg"
-              style={
-                !backdrop() && !poster()
-                  ? { background: getGradient(s().name) }
-                  : undefined
-              }
-            >
-              <Show when={backdrop() || poster()}>
+      {(getter) => {
+        const s = getter();
+        return (
+          <div class="relative">
+            {/* Backdrop with gradient fade */}
+            <div class="absolute inset-x-0 top-0 h-[55vh] -z-10 overflow-hidden">
+              <Show when={s.backdrop_path}>
                 <img
-                  src={backdrop() ?? poster() ?? ""}
+                  src={s.backdrop_path!}
                   alt=""
-                  class={`sp-modal-bg-img${backdrop() ? " sp-modal-bg-img--backdrop" : ""}`}
-                  onError={(e) => {
-                    const img = e.currentTarget as HTMLImageElement;
-                    if (img.src !== poster() && poster()) {
-                      img.src = poster()!;
-                    } else {
-                      img.style.display = "none";
-                    }
-                  }}
+                  class="w-full h-full object-cover opacity-50"
                 />
               </Show>
+              <div class="absolute inset-0 bg-gradient-to-t from-[#0b0b0b] via-[#0b0b0b]/70 to-transparent" />
+              <div class="absolute inset-0 bg-gradient-to-r from-[#0b0b0b]/95 via-[#0b0b0b]/40 to-transparent" />
             </div>
-            <div class="sp-modal-header-overlay" />
 
-            <div class="sp-modal-header-content">
-              <Show when={poster()}>
-                <div class="sp-modal-poster">
-                  <img
-                    src={poster()!}
-                    alt={s().name}
-                    class="sp-modal-poster-img"
-                    onError={(e) => {
-                      const parent = (e.currentTarget as HTMLImageElement)
-                        .parentElement;
-                      if (parent) parent.style.display = "none";
-                    }}
-                  />
-                </div>
+            <div class="px-8 py-12 flex gap-8 items-start">
+              <Show when={s.cover}>
+                <img
+                  src={s.cover!}
+                  alt={s.name}
+                  class="w-56 aspect-[2/3] object-cover rounded-lg ring-1 ring-zinc-800 shadow-xl"
+                />
               </Show>
 
-              <div class="sp-modal-info">
-                <div class="hp-hero-badges" style={{ "margin-bottom": "12px" }}>
-                  <span class="hp-badge series">📺 Series</span>
-                  <Show when={s().release_date}>
-                    <span class="hp-badge year">
-                      {String(s().release_date).slice(0, 4)}
-                    </span>
+              <div class="flex-1 min-w-0">
+                <h1 class="text-4xl font-semibold mb-2">{s.name}</h1>
+                <Show when={s.o_name && s.o_name !== s.name}>
+                  <p class="text-zinc-500 mb-3 italic">{s.o_name}</p>
+                </Show>
+
+                <div class="flex gap-3 text-sm text-zinc-400 mb-4">
+                  <Show when={s.release_date}>
+                    <span>{s.release_date!.slice(0, 4)}</span>
                   </Show>
-                  <Show when={s().rating_5based != null}>
-                    <span class="hp-badge rating">
-                      ⭐ {s().rating_5based!.toFixed(1)}
-                    </span>
+                  <Show when={s.episode_run_time}>
+                    <span>{s.episode_run_time} min/ep</span>
                   </Show>
-                  <Show when={s().episode_run_time}>
-                    <span class="hp-badge runtime">
-                      {s().episode_run_time} min/ep
+                  <Show when={s.tmdb_vote_average != null}>
+                    <span class="text-yellow-400">
+                      ★ {s.tmdb_vote_average!.toFixed(1)}
                     </span>
-                  </Show>
-                  <Show when={s().language}>
-                    <span class="hp-badge lang">{s().language}</span>
                   </Show>
                 </div>
 
-                <h1 class="sp-modal-title">{s().name}</h1>
-
-                <Show when={(s().genres ?? []).length > 0}>
-                  <div
-                    class="hp-hero-genres"
-                    style={{ margin: "8px 0 12px" }}
-                  >
-                    <For each={s().genres.slice(0, 5)}>
-                      {(g) => <span class="hp-genre-tag">{g}</span>}
+                <Show when={s.genres.length > 0}>
+                  <div class="flex gap-2 mb-5">
+                    <For each={s.genres}>
+                      {(g) => (
+                        <span class="text-xs px-2 py-0.5 rounded-full bg-zinc-800/80 ring-1 ring-zinc-700">
+                          {g}
+                        </span>
+                      )}
                     </For>
                   </div>
                 </Show>
 
-                <Show when={s().plot}>
-                  <p class="sp-modal-plot">{s().plot}</p>
-                </Show>
-
-                <div
-                  style={{
-                    display: "flex",
-                    gap: "12px",
-                    "margin-top": "14px",
-                    "flex-wrap": "wrap",
-                  }}
-                >
-                  <Show
-                    when={
-                      (s().seasons?.length ?? 0) > 0 && activeSeason() != null
-                    }
-                  >
-                    <button
-                      class={`hp-btn primary ${
-                        focusZone() === "actions" && actionIdx() === 0
-                          ? "mp-modal-action-focused"
-                          : ""
-                      }`}
-                      onClick={() => {
-                        const ep = (episodes() ?? [])[0];
-                        if (ep) handlePlayEpisode(ep);
-                      }}
-                      disabled={(episodes() ?? []).length === 0}
-                    >
-                      ▶ Play S
-                      {String(activeSeason()).padStart(2, "0")}E01
-                    </button>
-                  </Show>
-                  <button
-                    class={`hp-btn secondary ${
-                      focusZone() === "actions" && actionIdx() === 1
-                        ? "mp-modal-action-focused"
-                        : ""
-                    }`}
-                    onClick={() => {
-                      /* watchlist deferred */
-                    }}
-                    title="Watchlist coming soon"
-                  >
-                    + Add to Watchlist
-                  </button>
-                  <Show when={s().youtube_trailer}>
-                    <a
-                      href={`https://www.youtube.com/watch?v=${s().youtube_trailer}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="hp-btn secondary sp-trailer-link"
-                    >
-                      🎬 Trailer
-                    </a>
-                  </Show>
-                </div>
-
-                <Show when={s().cast}>
-                  <p class="sp-modal-cast">
-                    <span class="sp-modal-cast-label">Cast:</span>{" "}
-                    {s().cast!.split(",").slice(0, 5).join(", ")}
+                <Show when={s.plot}>
+                  <p class="text-zinc-300 leading-relaxed mb-6 max-w-3xl">
+                    {s.plot}
                   </p>
                 </Show>
+
+                <Show when={s.director}>
+                  <p class="text-sm text-zinc-400 mb-1">
+                    <span class="text-zinc-500">Director: </span>
+                    {s.director}
+                  </p>
+                </Show>
+                <Show when={s.cast}>
+                  <p class="text-sm text-zinc-400 mb-6">
+                    <span class="text-zinc-500">Cast: </span>
+                    {s.cast}
+                  </p>
+                </Show>
+
+                {/* Action buttons */}
+                <div class="flex gap-3">
+                  <For each={ACTIONS}>
+                    {(action, i) => {
+                      const focused = () =>
+                        isScopeOwner() &&
+                        zone() === "actions" &&
+                        actionIdx() === i();
+                      return (
+                        <button
+                          onClick={() => {
+                            setZone("actions");
+                            setActionIdx(i());
+                            activate();
+                          }}
+                          class={`rounded-md px-5 py-2 text-sm font-medium outline-none transition-all bg-zinc-800/80 hover:bg-zinc-700 text-zinc-200 ring-1 ring-zinc-700 ${
+                            focused() ? "ring-2 ring-violet-300 scale-105" : ""
+                          }`}
+                        >
+                          {action.label}
+                        </button>
+                      );
+                    }}
+                  </For>
+                </div>
               </div>
             </div>
 
-            <button
-              class="sp-modal-close"
-              onClick={() => navigate(-1)}
-              title="Back (Esc)"
-            >
-              ✕
-            </button>
-          </div>
-
-          {/* Seasons tab bar */}
-          <div class="sp-seasons-bar">
-            <Show
-              when={(s().seasons ?? []).length > 0}
-              fallback={
-                <Show
-                  when={!series.loading}
-                  fallback={
-                    <div class="sp-seasons-loading">
-                      <div class="sp-mini-spinner" /> Loading seasons…
-                    </div>
-                  }
+            {/* Seasons */}
+            <Show when={seasons().length > 0}>
+              <section class="px-8 mb-3">
+                <h2
+                  class={`text-sm font-medium mb-2 ${
+                    zone() === "seasons" ? "text-white" : "text-zinc-400"
+                  }`}
                 >
-                  <p class="sp-seasons-empty">No seasons available</p>
-                </Show>
-              }
-            >
-              <For each={s().seasons}>
-                {(season: SeasonOut) => (
-                  <button
-                    class={`sp-season-tab${activeSeason() === season.season_number ? " active" : ""}`}
-                    onClick={() => setActiveSeason(season.season_number)}
-                    data-season={season.season_number}
-                  >
-                    {season.name ?? `Season ${season.season_number}`}
-                    <Show when={season.episode_count != null}>
-                      <span class="sp-ep-count">{season.episode_count}</span>
-                    </Show>
-                  </button>
-                )}
-              </For>
-            </Show>
-          </div>
-
-          {/* Episodes list */}
-          <div class="sp-episodes-list" ref={(el) => (episodesRef = el)}>
-            <Show
-              when={!episodes.loading}
-              fallback={
-                <div class="sp-episodes-state">
-                  <div class="hp-spinner" />
-                  <span>Loading episodes…</span>
+                  Seasons
+                </h2>
+                <div class="flex gap-2 flex-wrap">
+                  <For each={seasons()}>
+                    {(season, i) => {
+                      const isActive = () =>
+                        activeSeason() === season.season_number;
+                      const isFocused = () =>
+                        isScopeOwner() &&
+                        zone() === "seasons" &&
+                        seasonIdx() === i();
+                      return (
+                        <button
+                          onClick={() => {
+                            setZone("seasons");
+                            setActiveSeason(season.season_number);
+                          }}
+                          class={`px-3 py-1.5 rounded-md text-sm transition-colors ring-1 outline-none ${
+                            isActive()
+                              ? "bg-violet-600/30 text-violet-200 ring-violet-500"
+                              : "bg-zinc-900 text-zinc-400 ring-zinc-800 hover:text-zinc-200"
+                          } ${isFocused() ? "ring-2 ring-violet-300" : ""}`}
+                        >
+                          {season.season_number === 0
+                            ? "Specials"
+                            : `Season ${season.season_number}`}
+                          <Show when={season.episode_count}>
+                            <span class="ml-2 text-xs text-zinc-500">
+                              {season.episode_count}
+                            </span>
+                          </Show>
+                        </button>
+                      );
+                    }}
+                  </For>
                 </div>
-              }
-            >
+              </section>
+            </Show>
+
+            {/* Episodes */}
+            <section class="px-8 pb-12">
+              <h2
+                class={`text-sm font-medium mb-3 ${
+                  zone() === "episodes" ? "text-white" : "text-zinc-400"
+                }`}
+              >
+                Episodes
+              </h2>
               <Show
-                when={(episodes() ?? []).length > 0}
+                when={episodes() && episodes()!.length > 0}
                 fallback={
-                  <div class="sp-episodes-state">
-                    <span style={{ "font-size": "2rem" }}>📭</span>
-                    <span>No episodes available for this season</span>
-                  </div>
+                  <p class="text-sm text-zinc-600">
+                    <Show
+                      when={episodes.loading}
+                      fallback={<span>No episodes for this season.</span>}
+                    >
+                      Loading episodes…
+                    </Show>
+                  </p>
                 }
               >
-                <For each={episodes()}>
-                  {(ep, i) => (
-                    <EpisodeRow
-                      episode={ep}
-                      season={activeSeason()}
-                      onPlay={() => handlePlayEpisode(ep)}
-                      focused={focusedEpIdx() === i()}
-                      dataIdx={i()}
-                    />
-                  )}
-                </For>
+                <div class="flex gap-3 overflow-x-auto scroll-smooth">
+                  <For each={episodes()!}>
+                    {(ep, i) => {
+                      const isFocused = () =>
+                        isScopeOwner() &&
+                        zone() === "episodes" &&
+                        episodeIdx() === i();
+                      let ref: HTMLDivElement | undefined;
+                      createEffect(() => {
+                        if (isFocused() && ref) {
+                          ref.scrollIntoView({
+                            behavior: "smooth",
+                            block: "nearest",
+                            inline: "center",
+                          });
+                        }
+                      });
+                      return (
+                        <div
+                          ref={(el) => (ref = el)}
+                          onClick={() => {
+                            setZone("episodes");
+                            setEpisodeIdx(i());
+                            activate();
+                          }}
+                          class={`flex-shrink-0 w-72 rounded-lg overflow-hidden ring-2 transition-all cursor-pointer ${
+                            isFocused()
+                              ? "ring-violet-400 scale-[1.02] shadow-lg shadow-violet-900/30"
+                              : "ring-zinc-800"
+                          }`}
+                        >
+                          <div class="aspect-video bg-zinc-900 relative">
+                            <Show
+                              when={ep.movie_image}
+                              fallback={
+                                <div class="absolute inset-0 flex items-center justify-center text-zinc-700 text-xl">
+                                  {epLabel(ep)}
+                                </div>
+                              }
+                            >
+                              <img
+                                src={ep.movie_image!}
+                                alt={ep.title ?? epLabel(ep)}
+                                loading="lazy"
+                                class="absolute inset-0 w-full h-full object-cover"
+                              />
+                              <div class="absolute bottom-0 left-0 right-0 px-2 py-1 bg-gradient-to-t from-black/80 to-transparent text-xs text-zinc-200">
+                                {epLabel(ep)}
+                                <Show when={fmtDuration(ep.duration_secs)}>
+                                  <span class="ml-2 text-zinc-400">
+                                    · {fmtDuration(ep.duration_secs)}
+                                  </span>
+                                </Show>
+                              </div>
+                            </Show>
+                          </div>
+                          <div class="p-2">
+                            <p
+                              class={`text-sm font-medium truncate ${
+                                isFocused() ? "text-white" : "text-zinc-300"
+                              }`}
+                            >
+                              {ep.title ?? epLabel(ep)}
+                            </p>
+                            <Show when={ep.plot}>
+                              <p class="text-xs text-zinc-500 mt-1 line-clamp-2">
+                                {ep.plot}
+                              </p>
+                            </Show>
+                          </div>
+                        </div>
+                      );
+                    }}
+                  </For>
+                </div>
               </Show>
-            </Show>
+            </section>
           </div>
-
-          <Show when={playError()}>
-            <div class="sp-ep-error-toast">
-              <span>⚠ {playError()}</span>
-              <button onClick={() => setPlayError(null)}>✕</button>
-            </div>
-          </Show>
-        </div>
-      )}
+        );
+      }}
     </Show>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// EpisodeRow — single row in the episode list
-// ---------------------------------------------------------------------------
-
-interface EpisodeRowProps {
-  episode: EpisodeOut;
-  season: number | null;
-  onPlay: () => void;
-  focused: boolean;
-  dataIdx: number;
-}
-
-function EpisodeRow(props: EpisodeRowProps): JSX.Element {
-  const seasonNum = () =>
-    String(props.season ?? props.episode.season_number ?? 1).padStart(2, "0");
-  const episodeNum = () => String(props.episode.episode_num).padStart(2, "0");
-  const label = () => `S${seasonNum()}E${episodeNum()}`;
-
-  return (
-    <div
-      data-ep-idx={props.dataIdx}
-      class={`sp-episode-item${props.focused ? " focused" : ""}`}
-      onClick={() => props.onPlay()}
-    >
-      <div class="sp-episode-num">{label()}</div>
-
-      <div class="sp-episode-info">
-        <p class="sp-episode-title">
-          {props.episode.title ?? `Episode ${props.episode.episode_num}`}
-        </p>
-        <Show when={props.episode.release_date}>
-          <p class="sp-episode-date">{props.episode.release_date}</p>
-        </Show>
-        <Show when={props.episode.plot}>
-          <p class="sp-episode-plot">{props.episode.plot}</p>
-        </Show>
-      </div>
-
-      <Show when={props.episode.container_extension}>
-        <span class="sp-episode-ext">
-          {props.episode.container_extension!.toUpperCase()}
-        </span>
-      </Show>
-
-      <button
-        class="sp-episode-play-btn"
-        onClick={(e) => {
-          e.stopPropagation();
-          props.onPlay();
-        }}
-        title={`Play ${label()}`}
-      >
-        ▶
-      </button>
-    </div>
   );
 }
