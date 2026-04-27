@@ -4,6 +4,7 @@ import {
   createResource,
   createSignal,
   For,
+  on,
   Show,
   onCleanup,
   onMount,
@@ -20,8 +21,6 @@ import type {
   SeriesListItem,
   SeriesSort,
 } from "../api/types";
-import HeroCarousel, { type HeroItem } from "../components/HeroCarousel";
-import LazyRail from "../components/LazyRail";
 import PosterCard from "../components/PosterCard";
 import Sidebar, { type SidebarItem } from "../components/Sidebar";
 import SortSelector from "../components/SortSelector";
@@ -36,16 +35,12 @@ import {
 import { authUser } from "../stores/auth";
 import { appShellZone, setAppShellZone } from "../stores/shell";
 
-const HERO_COUNT = 5;
-const RAIL_PAGE_SIZE = 30;
-
-type RailItemId = string;
+const PAGE_SIZE = 50;
+const COLS = 5;
+const PREFETCH_AHEAD = 10;
 
 function posterUrl(s: SeriesListItem): string | null {
   return s.cover || null;
-}
-function backdropUrl(s: SeriesListItem): string | null {
-  return s.backdrop_path || s.cover || null;
 }
 
 export default function SeriesPage() {
@@ -60,53 +55,102 @@ export default function SeriesPage() {
     () => !isCurated(),
     (fallback) => (fallback ? listSerieCategories() : Promise.resolve([])),
   );
-  const [popular] = createResource(() =>
-    listSeries({ sort: "popularity_desc", per_page: HERO_COUNT }),
-  );
 
-  interface RailDescriptor {
-    id: number;
+  interface FilterDescriptor {
+    id: number | null;
     label: string;
     count?: number;
-    filterKey: "genre_id" | "category_id";
+    filterKey: "genre_id" | "category_id" | null;
   }
 
-  const rails = createMemo<RailDescriptor[]>(() => {
+  const filters = createMemo<FilterDescriptor[]>(() => {
     if (isCurated()) {
       const gs: GenreCountOut[] = genres() ?? [];
-      return gs.map((g) => ({
-        id: g.id,
-        label: g.name,
-        count: g.count,
-        filterKey: "genre_id",
-      }));
+      return [
+        { id: null, label: "All series", filterKey: null },
+        ...gs.map((g) => ({
+          id: g.id,
+          label: g.name,
+          count: g.count,
+          filterKey: "genre_id" as const,
+        })),
+      ];
     }
     const cs: FlatCategory[] = categories() ?? [];
-    return cs.map((c) => ({
-      id: c.category_id,
-      label: c.name,
-      filterKey: "category_id",
-    }));
+    return [
+      { id: null, label: "All series", filterKey: null },
+      ...cs.map((c) => ({
+        id: c.category_id,
+        label: c.name,
+        filterKey: "category_id" as const,
+      })),
+    ];
   });
 
-  const sidebarItems = createMemo<SidebarItem[]>(() => [
-    { id: "__all__", label: "All series" },
-    ...rails().map((r) => ({ id: r.id, label: r.label, count: r.count })),
-  ]);
+  const sidebarItems = createMemo<SidebarItem[]>(() =>
+    filters().map((f) => ({
+      id: f.id ?? "__all__",
+      label: f.label,
+      count: f.count,
+    })),
+  );
 
-  const rightZones = createMemo<RailItemId[]>(() => [
-    "hero",
-    "sort",
-    ...rails().map((r) => `rail:${r.id}`),
-  ]);
+  const [selectedFilterIdx, setSelectedFilterIdx] = createSignal(0);
+  const selectedFilter = createMemo<FilterDescriptor | null>(
+    () => filters()[selectedFilterIdx()] ?? null,
+  );
 
-  const [zone, setZone] = createSignal<"sidebar" | RailItemId>("hero");
+  const [items, setItems] = createSignal<SeriesListItem[]>([]);
+  const [pageNum, setPageNum] = createSignal(0);
+  const [hasNext, setHasNext] = createSignal(false);
+  const [loading, setLoading] = createSignal(false);
+  let loadEpoch = 0;
+
+  async function loadPage(next: number) {
+    if (loading()) return;
+    const epoch = ++loadEpoch;
+    const f = selectedFilter();
+    const sort = seriesSort();
+    setLoading(true);
+    try {
+      const args: {
+        sort: SeriesSort;
+        per_page: number;
+        page: number;
+        genre_id?: number;
+        category_id?: number;
+      } = { sort, per_page: PAGE_SIZE, page: next };
+      if (f?.filterKey === "genre_id" && f.id != null) args.genre_id = f.id;
+      else if (f?.filterKey === "category_id" && f.id != null)
+        args.category_id = f.id;
+      const page = await listSeries(args);
+      if (epoch !== loadEpoch) return;
+      setItems((prev) => (next === 1 ? page.items : [...prev, ...page.items]));
+      setPageNum(next);
+      setHasNext(page.has_next);
+    } finally {
+      if (epoch === loadEpoch) setLoading(false);
+    }
+  }
+
+  createEffect(
+    on(
+      () => [selectedFilter()?.id ?? null, seriesSort()] as const,
+      () => {
+        setItems([]);
+        setPageNum(0);
+        setHasNext(false);
+        setCursor(0);
+        loadPage(1);
+      },
+    ),
+  );
+
+  type Zone = "sidebar" | "sort" | "grid";
+  const [zone, setZone] = createSignal<Zone>("grid");
   const [sidebarIdx, setSidebarIdx] = createSignal(0);
-  const [heroIdx, setHeroIdx] = createSignal(0);
   const [sortIdx, setSortIdx] = createSignal(0);
-  const [railIdx, setRailIdx] = createSignal<Record<number, number>>({});
-
-  const railRefs = new Map<number, HTMLDivElement>();
+  const [cursor, setCursor] = createSignal(0);
 
   const { isScopeOwner, setActive } = useNavigationScope("series", {
     priority: 0,
@@ -120,78 +164,58 @@ export default function SeriesPage() {
     if (idx >= 0) setSortIdx(idx);
   });
 
-  function getRailIdx(id: number): number {
-    return railIdx()[id] ?? 0;
-  }
-  function setRailIdxFor(id: number, n: number) {
-    setRailIdx((prev) => ({ ...prev, [id]: n }));
-  }
-
-  function pickSidebar(idx: number, dropFocus: boolean) {
-    const item = sidebarItems()[idx];
-    if (!item) return;
-    setSidebarIdx(idx);
-
-    if (item.id === "__all__") {
-      if (dropFocus) setZone("hero");
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      return;
-    }
-    const railId = item.id as number;
-    const el = railRefs.get(railId);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    if (dropFocus) setZone(`rail:${railId}`);
-  }
-
-  const heroItems = createMemo<HeroItem[]>(() => {
-    const items = popular()?.items.slice(0, HERO_COUNT) ?? [];
-    return items.map((s) => ({
-      id: s.id,
-      title: s.name,
-      backdrop: backdropUrl(s),
-      poster: posterUrl(s),
-      meta: (
-        <Show when={s.tmdb_vote_average != null}>
-          <span>★ {s.tmdb_vote_average!.toFixed(1)}</span>
-        </Show>
-      ),
-      tags: s.genres.slice(0, 3),
-    }));
-  });
-
   createEffect(() => {
-    const cur = zone();
-    if (typeof cur === "string" && cur.startsWith("rail:")) {
-      const id = Number(cur.slice(5));
-      const el = railRefs.get(id);
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    } else if (cur === "hero") {
-      window.scrollTo({ top: 0, behavior: "smooth" });
+    const c = cursor();
+    const total = items().length;
+    if (
+      hasNext() &&
+      !loading() &&
+      total > 0 &&
+      c >= total - PREFETCH_AHEAD
+    ) {
+      loadPage(pageNum() + 1);
     }
   });
+
+  function commitSidebar(idx: number) {
+    setSelectedFilterIdx(idx);
+    setSidebarIdx(idx);
+    setZone("grid");
+  }
 
   function moveVertical(delta: 1 | -1) {
     const cur = zone();
     if (cur === "sidebar") {
-      const items = sidebarItems();
       const next = sidebarIdx() + delta;
       if (next < 0) {
         setAppShellZone("nav");
         return;
       }
-      if (next >= items.length) return;
-      pickSidebar(next, false);
+      if (next >= filters().length) return;
+      setSidebarIdx(next);
+      setSelectedFilterIdx(next);
       return;
     }
-    const zs = rightZones();
-    const idx = zs.indexOf(cur as RailItemId);
-    const next = idx + delta;
-    if (next < 0) {
-      setAppShellZone("nav");
+    if (cur === "sort") {
+      if (delta < 0) {
+        setAppShellZone("nav");
+        return;
+      }
+      setZone("grid");
       return;
     }
-    if (next >= zs.length) return;
-    setZone(zs[next]);
+    const c = cursor();
+    if (delta < 0) {
+      if (c < COLS) {
+        setZone("sort");
+        return;
+      }
+      setCursor(c - COLS);
+      return;
+    }
+    const total = items().length;
+    if (total === 0) return;
+    setCursor(Math.min(c + COLS, total - 1));
   }
 
   function moveHorizontal(delta: 1 | -1) {
@@ -199,21 +223,10 @@ export default function SeriesPage() {
     if (cur === "sidebar") {
       if (delta < 0) {
         setSidebarOpen(false);
-        setZone("hero");
+        setZone("grid");
         return;
       }
-      pickSidebar(sidebarIdx(), true);
-      return;
-    }
-    if (cur === "hero") {
-      const total = heroItems().length;
-      if (delta < 0 && (total === 0 || heroIdx() === 0)) {
-        setSidebarOpen(true);
-        setZone("sidebar");
-        return;
-      }
-      if (total === 0) return;
-      setHeroIdx((i) => (i + delta + total) % total);
+      commitSidebar(sidebarIdx());
       return;
     }
     if (cur === "sort") {
@@ -226,32 +239,41 @@ export default function SeriesPage() {
       setSortIdx((i) => Math.min(Math.max(i + delta, 0), max));
       return;
     }
-    if (typeof cur === "string" && cur.startsWith("rail:")) {
-      const id = Number(cur.slice(5));
-      if (delta < 0 && getRailIdx(id) === 0) {
+    const c = cursor();
+    const total = items().length;
+    if (total === 0) {
+      if (delta < 0) {
+        setSidebarOpen(true);
+        setZone("sidebar");
+      }
+      return;
+    }
+    const col = c % COLS;
+    if (delta < 0) {
+      if (col === 0) {
         setSidebarOpen(true);
         setZone("sidebar");
         return;
       }
-      setRailIdxFor(id, Math.max(getRailIdx(id) + delta, 0));
+      setCursor(c - 1);
+      return;
     }
+    if (col === COLS - 1 || c === total - 1) return;
+    setCursor(c + 1);
   }
 
   function activate() {
     const cur = zone();
     if (cur === "sidebar") {
-      pickSidebar(sidebarIdx(), true);
-      return;
-    }
-    if (cur === "hero") {
-      const item = heroItems()[heroIdx()];
-      if (item) navigate(`/series/${item.id}`);
+      commitSidebar(sidebarIdx());
       return;
     }
     if (cur === "sort") {
       setSeriesSort(SERIES_SORT_OPTIONS[sortIdx()].value);
       return;
     }
+    const item = items()[cursor()];
+    if (item) navigate(`/series/${item.id}`);
   }
 
   function onKey(e: KeyboardEvent) {
@@ -287,16 +309,10 @@ export default function SeriesPage() {
         <Sidebar
           title={isCurated() ? "Genres" : "Categories"}
           items={sidebarItems()}
-          activeId={() => {
-            const cur = zone();
-            if (typeof cur === "string" && cur.startsWith("rail:")) {
-              return Number(cur.slice(5));
-            }
-            return "__all__";
-          }}
+          activeId={() => filters()[selectedFilterIdx()]?.id ?? "__all__"}
           focusedIdx={sidebarIdx}
           isFocused={() => zone() === "sidebar"}
-          onSelect={(_, i) => pickSidebar(i, true)}
+          onSelect={(_, i) => commitSidebar(i)}
         />
       </Show>
 
@@ -307,35 +323,6 @@ export default function SeriesPage() {
           </div>
         </Show>
 
-        <Show
-          when={heroItems().length > 0}
-          fallback={
-            <div class="h-[40vh] flex items-center justify-center text-zinc-600 text-sm">
-              <Show when={popular.loading} fallback={<span>No series yet.</span>}>
-                Loading…
-              </Show>
-            </div>
-          }
-        >
-          <HeroCarousel
-            items={heroItems()}
-            activeIndex={heroIdx}
-            onIndexChange={setHeroIdx}
-            paused={() => zone() === "hero"}
-            isFocused={() => zone() === "hero"}
-            actions={[
-              {
-                label: "Open",
-                primary: true,
-                onClick: () => {
-                  const item = heroItems()[heroIdx()];
-                  if (item) navigate(`/series/${item.id}`);
-                },
-              },
-            ]}
-          />
-        </Show>
-
         <SortSelector
           value={seriesSort}
           options={SERIES_SORT_OPTIONS}
@@ -344,57 +331,64 @@ export default function SeriesPage() {
           focusedIdx={sortIdx}
         />
 
-        <div class="space-y-2 pb-12">
-          <For each={rails()}>
-            {(rail) => {
-              const railZoneId: RailItemId = `rail:${rail.id}`;
-              return (
-                <LazyRail<SeriesListItem>
-                  ref={(el) => railRefs.set(rail.id, el)}
-                  title={
-                    rail.count != null
-                      ? `${rail.label} · ${rail.count.toLocaleString()}`
-                      : rail.label
-                  }
-                  reactiveKey={() =>
-                    `${rail.id}:${rail.filterKey}:${seriesSort()}`
-                  }
-                  fetch={async () => {
-                    const args: {
-                      sort: SeriesSort;
-                      per_page: number;
-                      genre_id?: number;
-                      category_id?: number;
-                    } = { sort: seriesSort(), per_page: RAIL_PAGE_SIZE };
-                    if (rail.filterKey === "genre_id") args.genre_id = rail.id;
-                    else args.category_id = rail.id;
-                    const page = await listSeries(args);
-                    return page.items;
-                  }}
-                  isFocused={() => zone() === railZoneId}
-                  selectedIndex={() => getRailIdx(rail.id)}
-                  renderItem={(item, focused, idx) => (
-                    <PosterCard
-                      title={item.name}
-                      imageUrl={posterUrl(item)}
-                      focused={() => focused}
-                      onClick={() => {
-                        setRailIdxFor(rail.id, idx);
-                        setZone(railZoneId);
-                        navigate(`/series/${item.id}`);
-                      }}
-                      meta={
-                        <Show when={item.tmdb_vote_average != null}>
-                          <span>★ {item.tmdb_vote_average!.toFixed(1)}</span>
-                        </Show>
-                      }
-                    />
-                  )}
-                />
-              );
-            }}
-          </For>
-        </div>
+        <Show
+          when={items().length > 0}
+          fallback={
+            <div class="h-[40vh] flex items-center justify-center text-zinc-600 text-sm">
+              <Show
+                when={loading() && items().length === 0}
+                fallback={<span>Nothing matches this filter.</span>}
+              >
+                Loading…
+              </Show>
+            </div>
+          }
+        >
+          <div class="px-8 pb-12">
+            <h2 class="text-lg font-medium mb-3">
+              {selectedFilter()?.label ?? "All series"}
+              <Show when={selectedFilter()?.count != null}>
+                <span class="ml-2 text-xs text-zinc-500">
+                  · {selectedFilter()!.count!.toLocaleString()}
+                </span>
+              </Show>
+            </h2>
+            <div
+              class="grid gap-3"
+              style={{ "grid-template-columns": `repeat(${COLS}, minmax(0, 1fr))` }}
+            >
+              <For each={items()}>
+                {(item, i) => (
+                  <PosterCard
+                    title={item.name}
+                    imageUrl={posterUrl(item)}
+                    focused={() =>
+                      isScopeOwner() && zone() === "grid" && cursor() === i()
+                    }
+                    onClick={() => {
+                      setZone("grid");
+                      setCursor(i());
+                      navigate(`/series/${item.id}`);
+                    }}
+                    meta={
+                      <Show when={item.tmdb_vote_average != null}>
+                        <span>★ {item.tmdb_vote_average!.toFixed(1)}</span>
+                      </Show>
+                    }
+                  />
+                )}
+              </For>
+            </div>
+            <Show when={loading() && items().length > 0}>
+              <p class="mt-6 text-center text-xs text-zinc-600">Loading more…</p>
+            </Show>
+            <Show when={!hasNext() && items().length > 0 && pageNum() > 0}>
+              <p class="mt-6 text-center text-xs text-zinc-700">
+                End of list · {items().length} items
+              </p>
+            </Show>
+          </div>
+        </Show>
       </div>
     </div>
   );

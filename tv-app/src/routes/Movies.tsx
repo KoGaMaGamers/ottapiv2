@@ -4,6 +4,7 @@ import {
   createResource,
   createSignal,
   For,
+  on,
   Show,
   onCleanup,
   onMount,
@@ -20,8 +21,6 @@ import type {
   MovieListItem,
   MovieSort,
 } from "../api/types";
-import HeroCarousel, { type HeroItem } from "../components/HeroCarousel";
-import LazyRail from "../components/LazyRail";
 import PosterCard from "../components/PosterCard";
 import Sidebar, { type SidebarItem } from "../components/Sidebar";
 import SortSelector from "../components/SortSelector";
@@ -37,41 +36,41 @@ import { authUser } from "../stores/auth";
 import { appShellZone, setAppShellZone } from "../stores/shell";
 
 /**
- * Movies — vertical scroll of one rail per genre (or per category in
- * fallback mode). Each rail lazy-loads when it scrolls into view.
+ * Movies — Amazon-style catalog browse.
  *
- * Layout (curated):
+ *   ┌── Sidebar ──┬── Sort: [Most Recent] [Top Rated] ── ──────┐
+ *   │ All movies  │  ┌──┐ ┌──┐ ┌──┐ ┌──┐ ┌──┐                │
+ *   │ Action 3059 │  │  │ │  │ │  │ │  │ │  │                │
+ *   │ Comedy 4051 │  └──┘ └──┘ └──┘ └──┘ └──┘                │
+ *   │ Drama  ...  │  ┌──┐ ┌──┐ ┌──┐ ┌──┐ ┌──┐                │
+ *   │             │  │  │ │  │ │  │ │  │ │  │  ← infinite    │
+ *   │             │  └──┘ └──┘ └──┘ └──┘ └──┘    scroll      │
+ *   └─────────────┴────────────────────────────────────────────┘
  *
- *   ┌── Sidebar (genres) ─┬── Hero (top popular) ─────────────┐
- *   │ All movies          │  Sort: [Most Recent] [Top Rated]…  │
- *   │ Action      3,059   ├─────────────────────────────────────┤
- *   │ Comedy      4,051   │  ── Action ── ────────────────────  │
- *   │ ...                 │  [card] [card] [card] [card]       │
- *   │                     │  ── Comedy ── ────────────────────  │
- *   │                     │  [card] [card] [card] [card]       │
- *   │                     │  ...                                │
- *   └─────────────────────┴─────────────────────────────────────┘
+ * One vertical scrolling container per page; the sidebar genre/category
+ * picker swaps the *content* of that container. Infinite scroll appends
+ * the next page when the cursor approaches the last loaded row.
  *
- * Sidebar selection scrolls the page to the matching genre rail and
- * lands focus there. The selected sort applies to ALL rails — they
- * re-fetch when the user changes it.
+ * D-pad zones:
+ *   sidebar / sort / grid
+ *
+ * Grid nav:
+ *   ←/→  move within row (← at col 0 opens sidebar)
+ *   ↑/↓  move between rows (↑ at row 0 lands on "sort"; ↓ past last
+ *        loaded row triggers next page)
  */
 
-const HERO_COUNT = 5;
-const RAIL_PAGE_SIZE = 30;
-
-type RailItemId = string; // "hero" | "sort" | `rail:${id}`
+const PAGE_SIZE = 50;
+const COLS = 5;
+/** When the cursor is within this many items of the end, prefetch next page. */
+const PREFETCH_AHEAD = 10;
 
 function posterUrl(m: MovieListItem): string | null {
   return m.cover_big || m.stream_icon || null;
 }
-function backdropUrl(m: MovieListItem): string | null {
-  return m.backdrop_path || m.cover_big || null;
-}
 
 export default function MoviesPage() {
   const navigate = useNavigate();
-
   const isCurated = () => authUser()?.view_mode === "curated";
 
   const [genres] = createResource(
@@ -83,74 +82,125 @@ export default function MoviesPage() {
     (fallback) => (fallback ? listMovieCategories() : Promise.resolve([])),
   );
 
-  // Hero: top-N most-popular regardless of selected genre. Independent of sort.
-  const [popular] = createResource(() =>
-    listMovies({ sort: "popularity_desc", per_page: HERO_COUNT }),
+  // ---------------------------------------------------------------------------
+  // Sidebar source — genres for curated providers, categories otherwise
+  // ---------------------------------------------------------------------------
+
+  interface FilterDescriptor {
+    id: number | null; // null = "All"
+    label: string;
+    count?: number;
+    filterKey: "genre_id" | "category_id" | null;
+  }
+
+  const filters = createMemo<FilterDescriptor[]>(() => {
+    if (isCurated()) {
+      const gs: GenreCountOut[] = genres() ?? [];
+      return [
+        { id: null, label: "All movies", filterKey: null },
+        ...gs.map((g) => ({
+          id: g.id,
+          label: g.name,
+          count: g.count,
+          filterKey: "genre_id" as const,
+        })),
+      ];
+    }
+    const cs: FlatCategory[] = categories() ?? [];
+    return [
+      { id: null, label: "All movies", filterKey: null },
+      ...cs.map((c) => ({
+        id: c.category_id,
+        label: c.name,
+        filterKey: "category_id" as const,
+      })),
+    ];
+  });
+
+  const sidebarItems = createMemo<SidebarItem[]>(() =>
+    filters().map((f) => ({
+      id: f.id ?? "__all__",
+      label: f.label,
+      count: f.count,
+    })),
   );
 
   // ---------------------------------------------------------------------------
-  // Sidebar items + corresponding rail descriptors. We keep one source-of-truth
-  // list — `rails` — that drives both sidebar entries and the rail render order.
+  // Selected filter (sidebar selection that's been "committed" via Enter or →)
   // ---------------------------------------------------------------------------
 
-  interface RailDescriptor {
-    /** Stable id (genre.id when curated, category_id when fallback). */
-    id: number;
-    label: string;
-    count?: number;
-    /** Fetcher key — either genre_id or category_id. */
-    filterKey: "genre_id" | "category_id";
+  const [selectedFilterIdx, setSelectedFilterIdx] = createSignal(0);
+  const selectedFilter = createMemo<FilterDescriptor | null>(
+    () => filters()[selectedFilterIdx()] ?? null,
+  );
+
+  // ---------------------------------------------------------------------------
+  // Paginated grid state
+  //
+  // We accumulate pages into `items`. When the filter or sort changes the
+  // accumulator resets and page 1 is fetched.
+  // ---------------------------------------------------------------------------
+
+  const [items, setItems] = createSignal<MovieListItem[]>([]);
+  const [pageNum, setPageNum] = createSignal(0); // 0 = none loaded
+  const [hasNext, setHasNext] = createSignal(false);
+  const [loading, setLoading] = createSignal(false);
+  /** Tracks the (sort, filterKey, filterId) combination of the currently-loaded
+   *  pages so async responses can be discarded if the user changed filters
+   *  while a fetch was in flight. */
+  let loadEpoch = 0;
+
+  async function loadPage(next: number) {
+    if (loading()) return;
+    const epoch = ++loadEpoch;
+    const f = selectedFilter();
+    const sort = movieSort();
+    setLoading(true);
+    try {
+      const args: {
+        sort: MovieSort;
+        per_page: number;
+        page: number;
+        genre_id?: number;
+        category_id?: number;
+      } = { sort, per_page: PAGE_SIZE, page: next };
+      if (f?.filterKey === "genre_id" && f.id != null) args.genre_id = f.id;
+      else if (f?.filterKey === "category_id" && f.id != null)
+        args.category_id = f.id;
+      const page = await listMovies(args);
+      if (epoch !== loadEpoch) return; // user moved on; drop response
+      setItems((prev) => (next === 1 ? page.items : [...prev, ...page.items]));
+      setPageNum(next);
+      setHasNext(page.has_next);
+    } finally {
+      if (epoch === loadEpoch) setLoading(false);
+    }
   }
 
-  const rails = createMemo<RailDescriptor[]>(() => {
-    if (isCurated()) {
-      const gs: GenreCountOut[] = genres() ?? [];
-      return gs.map((g) => ({
-        id: g.id,
-        label: g.name,
-        count: g.count,
-        filterKey: "genre_id",
-      }));
-    }
-    const cs: FlatCategory[] = categories() ?? [];
-    return cs.map((c) => ({
-      id: c.category_id,
-      label: c.name,
-      filterKey: "category_id",
-    }));
-  });
-
-  const sidebarItems = createMemo<SidebarItem[]>(() => [
-    { id: "__all__", label: isCurated() ? "All movies" : "All movies" },
-    ...rails().map((r) => ({ id: r.id, label: r.label, count: r.count })),
-  ]);
+  /** Reset + load page 1 whenever the filter or sort changes. */
+  createEffect(
+    on(
+      () => [selectedFilter()?.id ?? null, movieSort()] as const,
+      () => {
+        setItems([]);
+        setPageNum(0);
+        setHasNext(false);
+        setCursor(0);
+        loadPage(1);
+      },
+    ),
+  );
 
   // ---------------------------------------------------------------------------
   // Navigation state
-  //
-  // Zones:
-  //   - "sidebar"   → left column
-  //   - "hero"      → right column, top
-  //   - "sort"      → right column, second
-  //   - "rail:<id>" → one zone per rail
-  //
-  // Vertical movement cycles through the right-column zones in order.
   // ---------------------------------------------------------------------------
 
-  const rightZones = createMemo<RailItemId[]>(() => [
-    "hero",
-    "sort",
-    ...rails().map((r) => `rail:${r.id}`),
-  ]);
-
-  const [zone, setZone] = createSignal<"sidebar" | RailItemId>("hero");
+  type Zone = "sidebar" | "sort" | "grid";
+  const [zone, setZone] = createSignal<Zone>("grid");
   const [sidebarIdx, setSidebarIdx] = createSignal(0);
-  const [heroIdx, setHeroIdx] = createSignal(0);
   const [sortIdx, setSortIdx] = createSignal(0);
-  /** Per-rail selectedIndex map. Defaults to 0 on first focus. */
-  const [railIdx, setRailIdx] = createSignal<Record<number, number>>({});
-
-  const railRefs = new Map<number, HTMLDivElement>();
+  /** Cursor in the grid, as an absolute item index. */
+  const [cursor, setCursor] = createSignal(0);
 
   const { isScopeOwner, setActive } = useNavigationScope("movies", {
     priority: 0,
@@ -158,78 +208,36 @@ export default function MoviesPage() {
   });
   createEffect(() => setActive(appShellZone() === "content"));
 
-  // Keep sortIdx in sync with the persisted sort signal so the SortSelector
-  // highlights the current value.
+  // Keep the sort row's focused-pill in sync with the persisted sort signal
   createEffect(() => {
     const cur = movieSort();
     const idx = MOVIE_SORT_OPTIONS.findIndex((o) => o.value === cur);
     if (idx >= 0) setSortIdx(idx);
   });
 
-  function getRailIdx(id: number): number {
-    return railIdx()[id] ?? 0;
-  }
-  function setRailIdxFor(id: number, n: number) {
-    setRailIdx((prev) => ({ ...prev, [id]: n }));
-  }
-
-  // ---------------------------------------------------------------------------
-  // Sidebar interaction — selection scrolls to the matching rail and drops
-  // focus into it.
-  // ---------------------------------------------------------------------------
-
-  function pickSidebar(idx: number, dropFocus: boolean) {
-    const item = sidebarItems()[idx];
-    if (!item) return;
-    setSidebarIdx(idx);
-
-    if (item.id === "__all__") {
-      // Scroll back to top: focus hero
-      if (dropFocus) setZone("hero");
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      return;
-    }
-
-    const railId = item.id as number;
-    const el = railRefs.get(railId);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    if (dropFocus) setZone(`rail:${railId}`);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Hero items derived from popular[]
-  // ---------------------------------------------------------------------------
-
-  const heroItems = createMemo<HeroItem[]>(() => {
-    const items = popular()?.items.slice(0, HERO_COUNT) ?? [];
-    return items.map((m) => ({
-      id: m.id,
-      title: m.name,
-      backdrop: backdropUrl(m),
-      poster: posterUrl(m),
-      meta: (
-        <>
-          {m.year && <span>{m.year}</span>}
-          {m.tmdb_vote_average != null && (
-            <span class="ml-2">★ {m.tmdb_vote_average.toFixed(1)}</span>
-          )}
-        </>
-      ),
-      tags: m.genres.slice(0, 3),
-    }));
-  });
-
-  // Auto-scroll the focused rail into view as the user navigates with ↓/↑.
+  /** Trigger prefetch when cursor approaches the end of loaded items. */
   createEffect(() => {
-    const cur = zone();
-    if (typeof cur === "string" && cur.startsWith("rail:")) {
-      const id = Number(cur.slice(5));
-      const el = railRefs.get(id);
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-    } else if (cur === "hero") {
-      window.scrollTo({ top: 0, behavior: "smooth" });
+    const c = cursor();
+    const total = items().length;
+    if (
+      hasNext() &&
+      !loading() &&
+      total > 0 &&
+      c >= total - PREFETCH_AHEAD
+    ) {
+      loadPage(pageNum() + 1);
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Sidebar interaction
+  // ---------------------------------------------------------------------------
+
+  function commitSidebar(idx: number) {
+    setSelectedFilterIdx(idx);
+    setSidebarIdx(idx);
+    setZone("grid");
+  }
 
   // ---------------------------------------------------------------------------
   // Keyboard handling
@@ -238,25 +246,39 @@ export default function MoviesPage() {
   function moveVertical(delta: 1 | -1) {
     const cur = zone();
     if (cur === "sidebar") {
-      const items = sidebarItems();
       const next = sidebarIdx() + delta;
       if (next < 0) {
         setAppShellZone("nav");
         return;
       }
-      if (next >= items.length) return;
-      pickSidebar(next, false); // sidebar nav scrolls preview but keeps focus
+      if (next >= filters().length) return;
+      setSidebarIdx(next);
+      // Live preview: ↑/↓ in sidebar swaps the grid content immediately
+      setSelectedFilterIdx(next);
       return;
     }
-    const zs = rightZones();
-    const idx = zs.indexOf(cur as RailItemId);
-    const next = idx + delta;
-    if (next < 0) {
-      setAppShellZone("nav");
+    if (cur === "sort") {
+      if (delta < 0) {
+        setAppShellZone("nav");
+        return;
+      }
+      setZone("grid");
       return;
     }
-    if (next >= zs.length) return;
-    setZone(zs[next]);
+    // grid
+    const c = cursor();
+    if (delta < 0) {
+      if (c < COLS) {
+        setZone("sort");
+        return;
+      }
+      setCursor(c - COLS);
+      return;
+    }
+    const total = items().length;
+    if (total === 0) return;
+    const target = c + COLS;
+    setCursor(Math.min(target, total - 1));
   }
 
   function moveHorizontal(delta: 1 | -1) {
@@ -264,22 +286,11 @@ export default function MoviesPage() {
     if (cur === "sidebar") {
       if (delta < 0) {
         setSidebarOpen(false);
-        setZone("hero");
+        setZone("grid");
         return;
       }
-      // → from sidebar drops focus into the rail it was previewing
-      pickSidebar(sidebarIdx(), true);
-      return;
-    }
-    if (cur === "hero") {
-      const total = heroItems().length;
-      if (delta < 0 && (total === 0 || heroIdx() === 0)) {
-        setSidebarOpen(true);
-        setZone("sidebar");
-        return;
-      }
-      if (total === 0) return;
-      setHeroIdx((i) => (i + delta + total) % total);
+      // → on a sidebar item commits and drops focus into the grid
+      commitSidebar(sidebarIdx());
       return;
     }
     if (cur === "sort") {
@@ -292,47 +303,43 @@ export default function MoviesPage() {
       setSortIdx((i) => Math.min(Math.max(i + delta, 0), max));
       return;
     }
-    // rail:<id>
-    if (typeof cur === "string" && cur.startsWith("rail:")) {
-      const id = Number(cur.slice(5));
-      // The actual item count is unknown (LazyRail owns it). Use a generous
-      // upper bound — Rail's internal renderItem is keyed by selectedIndex,
-      // and PosterCard will just not flash a focus ring on out-of-range.
-      // We let users overshoot; the rail clamps via card clicks.
-      if (delta < 0 && getRailIdx(id) === 0) {
+    // grid
+    const c = cursor();
+    const total = items().length;
+    if (total === 0) {
+      if (delta < 0) {
+        setSidebarOpen(true);
+        setZone("sidebar");
+      }
+      return;
+    }
+    const col = c % COLS;
+    if (delta < 0) {
+      if (col === 0) {
         setSidebarOpen(true);
         setZone("sidebar");
         return;
       }
-      setRailIdxFor(id, Math.max(getRailIdx(id) + delta, 0));
+      setCursor(c - 1);
+      return;
     }
+    // delta > 0
+    if (col === COLS - 1 || c === total - 1) return;
+    setCursor(c + 1);
   }
 
   function activate() {
     const cur = zone();
     if (cur === "sidebar") {
-      pickSidebar(sidebarIdx(), true);
-      return;
-    }
-    if (cur === "hero") {
-      const item = heroItems()[heroIdx()];
-      if (item) navigate(`/movies/${item.id}`);
+      commitSidebar(sidebarIdx());
       return;
     }
     if (cur === "sort") {
       setMovieSort(MOVIE_SORT_OPTIONS[sortIdx()].value);
       return;
     }
-    // rail:<id> — emit click on the focused card. The LazyRail's renderItem
-    // wires the actual onClick → navigate; here we don't have direct access
-    // to the focused MovieListItem, so we rely on the click already happening
-    // when the user pressed Enter inside the card (ie. the focused card has
-    // a real DOM focus). For TV remotes that don't issue a real DOM click on
-    // Enter, the page-wide Enter handler below provides a fallback by
-    // looking up the rail's currently-cached items. We can't see rail
-    // contents from here without lifting state — so for now, rely on the
-    // card's onClick (we can route to detail via a subscribers callback).
-    // (The renderItem callback for each rail captures `navigate` directly.)
+    const item = items()[cursor()];
+    if (item) navigate(`/movies/${item.id}`);
   }
 
   function onKey(e: KeyboardEvent) {
@@ -362,22 +369,20 @@ export default function MoviesPage() {
   onMount(() => window.addEventListener("keydown", onKey));
   onCleanup(() => window.removeEventListener("keydown", onKey));
 
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
   return (
     <div class="flex h-[calc(100vh-49px)]">
       <Show when={sidebarOpen()}>
         <Sidebar
           title={isCurated() ? "Genres" : "Categories"}
           items={sidebarItems()}
-          activeId={() => {
-            const cur = zone();
-            if (typeof cur === "string" && cur.startsWith("rail:")) {
-              return Number(cur.slice(5));
-            }
-            return "__all__";
-          }}
+          activeId={() => filters()[selectedFilterIdx()]?.id ?? "__all__"}
           focusedIdx={sidebarIdx}
           isFocused={() => zone() === "sidebar"}
-          onSelect={(_, i) => pickSidebar(i, true)}
+          onSelect={(_, i) => commitSidebar(i)}
         />
       </Show>
 
@@ -388,35 +393,6 @@ export default function MoviesPage() {
           </div>
         </Show>
 
-        <Show
-          when={heroItems().length > 0}
-          fallback={
-            <div class="h-[40vh] flex items-center justify-center text-zinc-600 text-sm">
-              <Show when={popular.loading} fallback={<span>No movies yet.</span>}>
-                Loading…
-              </Show>
-            </div>
-          }
-        >
-          <HeroCarousel
-            items={heroItems()}
-            activeIndex={heroIdx}
-            onIndexChange={setHeroIdx}
-            paused={() => zone() === "hero"}
-            isFocused={() => zone() === "hero"}
-            actions={[
-              {
-                label: "Open",
-                primary: true,
-                onClick: () => {
-                  const item = heroItems()[heroIdx()];
-                  if (item) navigate(`/movies/${item.id}`);
-                },
-              },
-            ]}
-          />
-        </Show>
-
         <SortSelector
           value={movieSort}
           options={MOVIE_SORT_OPTIONS}
@@ -425,62 +401,69 @@ export default function MoviesPage() {
           focusedIdx={sortIdx}
         />
 
-        <div class="space-y-2 pb-12">
-          <For each={rails()}>
-            {(rail) => {
-              const railZoneId: RailItemId = `rail:${rail.id}`;
-              return (
-                <LazyRail<MovieListItem>
-                  ref={(el) => railRefs.set(rail.id, el)}
-                  title={
-                    rail.count != null
-                      ? `${rail.label} · ${rail.count.toLocaleString()}`
-                      : rail.label
-                  }
-                  reactiveKey={() =>
-                    `${rail.id}:${rail.filterKey}:${movieSort()}`
-                  }
-                  fetch={async () => {
-                    const args: {
-                      sort: MovieSort;
-                      per_page: number;
-                      genre_id?: number;
-                      category_id?: number;
-                    } = { sort: movieSort(), per_page: RAIL_PAGE_SIZE };
-                    if (rail.filterKey === "genre_id") args.genre_id = rail.id;
-                    else args.category_id = rail.id;
-                    const page = await listMovies(args);
-                    return page.items;
-                  }}
-                  isFocused={() => zone() === railZoneId}
-                  selectedIndex={() => getRailIdx(rail.id)}
-                  renderItem={(item, focused, idx) => (
-                    <PosterCard
-                      title={item.name}
-                      imageUrl={posterUrl(item)}
-                      focused={() => focused}
-                      onClick={() => {
-                        setRailIdxFor(rail.id, idx);
-                        setZone(railZoneId);
-                        navigate(`/movies/${item.id}`);
-                      }}
-                      meta={
-                        <>
-                          {item.year && <span>{item.year}</span>}
-                          {item.tmdb_vote_average != null && (
-                            <span class="ml-2">
-                              ★ {item.tmdb_vote_average.toFixed(1)}
-                            </span>
-                          )}
-                        </>
-                      }
-                    />
-                  )}
-                />
-              );
-            }}
-          </For>
-        </div>
+        <Show
+          when={items().length > 0}
+          fallback={
+            <div class="h-[40vh] flex items-center justify-center text-zinc-600 text-sm">
+              <Show
+                when={loading() && items().length === 0}
+                fallback={<span>Nothing matches this filter.</span>}
+              >
+                Loading…
+              </Show>
+            </div>
+          }
+        >
+          <div class="px-8 pb-12">
+            <h2 class="text-lg font-medium mb-3">
+              {selectedFilter()?.label ?? "All movies"}
+              <Show when={selectedFilter()?.count != null}>
+                <span class="ml-2 text-xs text-zinc-500">
+                  · {selectedFilter()!.count!.toLocaleString()}
+                </span>
+              </Show>
+            </h2>
+            <div
+              class="grid gap-3"
+              style={{ "grid-template-columns": `repeat(${COLS}, minmax(0, 1fr))` }}
+            >
+              <For each={items()}>
+                {(item, i) => (
+                  <PosterCard
+                    title={item.name}
+                    imageUrl={posterUrl(item)}
+                    focused={() =>
+                      isScopeOwner() && zone() === "grid" && cursor() === i()
+                    }
+                    onClick={() => {
+                      setZone("grid");
+                      setCursor(i());
+                      navigate(`/movies/${item.id}`);
+                    }}
+                    meta={
+                      <>
+                        {item.year && <span>{item.year}</span>}
+                        {item.tmdb_vote_average != null && (
+                          <span class="ml-2">
+                            ★ {item.tmdb_vote_average.toFixed(1)}
+                          </span>
+                        )}
+                      </>
+                    }
+                  />
+                )}
+              </For>
+            </div>
+            <Show when={loading() && items().length > 0}>
+              <p class="mt-6 text-center text-xs text-zinc-600">Loading more…</p>
+            </Show>
+            <Show when={!hasNext() && items().length > 0 && pageNum() > 0}>
+              <p class="mt-6 text-center text-xs text-zinc-700">
+                End of list · {items().length} items
+              </p>
+            </Show>
+          </div>
+        </Show>
       </div>
     </div>
   );
