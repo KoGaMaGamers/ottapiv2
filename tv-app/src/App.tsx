@@ -10,6 +10,7 @@ import Movies from "./routes/Movies";
 import Series from "./routes/Series";
 import SeriesDetail from "./routes/SeriesDetail";
 import Live from "./routes/Live";
+import Search from "./routes/Search";
 
 /**
  * Top-level router shell.
@@ -30,19 +31,6 @@ import Live from "./routes/Live";
 
 function RootRedirect() {
   return <Navigate href={authToken() ? "/home" : "/login"} />;
-}
-
-function PortPending(props: { source: string }) {
-  return (
-    <div class="min-h-[60vh] flex items-center justify-center text-zinc-500 px-6">
-      <div class="text-center">
-        <p class="text-zinc-300 text-sm">Port pending</p>
-        <p class="text-zinc-600 text-xs mt-1">
-          Legacy source: <code>{props.source}</code>
-        </p>
-      </div>
-    </div>
-  );
 }
 
 export default function App() {
@@ -72,10 +60,7 @@ export default function App() {
           <Route path="/series" component={Series} />
           <Route path="/series/:id" component={SeriesDetail} />
           <Route path="/live" component={Live} />
-          <Route
-            path="/search"
-            component={() => <PortPending source="SearchPage.jsx" />}
-          />
+          <Route path="/search" component={Search} />
           <Route path="/profile" component={Profile} />
         </Route>
       </Router>
