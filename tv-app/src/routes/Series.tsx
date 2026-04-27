@@ -3,39 +3,43 @@ import {
   createMemo,
   createResource,
   createSignal,
+  For,
   Show,
   onCleanup,
   onMount,
 } from "solid-js";
-import { useNavigate, useSearchParams } from "@solidjs/router";
+import { useNavigate } from "@solidjs/router";
 import {
   listSerieCategories,
   listSeries,
   listSeriesGenres,
 } from "../api/catalog";
-import type { SeriesListItem, SeriesSort } from "../api/types";
+import type {
+  FlatCategory,
+  GenreCountOut,
+  SeriesListItem,
+  SeriesSort,
+} from "../api/types";
 import HeroCarousel, { type HeroItem } from "../components/HeroCarousel";
+import LazyRail from "../components/LazyRail";
 import PosterCard from "../components/PosterCard";
-import Rail from "../components/Rail";
 import Sidebar, { type SidebarItem } from "../components/Sidebar";
+import SortSelector from "../components/SortSelector";
 import { useNavigationScope } from "../lib/navigation";
 import { isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
 import { sidebarOpen, setSidebarOpen } from "../lib/sidebarPrefs";
+import {
+  SERIES_SORT_OPTIONS,
+  seriesSort,
+  setSeriesSort,
+} from "../lib/sortPrefs";
 import { authUser } from "../stores/auth";
 import { appShellZone, setAppShellZone } from "../stores/shell";
 
-/**
- * Series listing — same shape as MoviesPage. Curated providers see
- * TMDB genres in the sidebar; fallback providers see series categories.
- * Sidebar is collapsible and the open/closed state is shared with
- * Movies via lib/sidebarPrefs.
- */
-
-const RAIL_PAGE_SIZE = 30;
 const HERO_COUNT = 5;
+const RAIL_PAGE_SIZE = 30;
 
-type Zone = "sidebar" | "hero" | "rail-popular" | "rail-newest" | "rail-rated";
-const ZONES_RIGHT: Zone[] = ["hero", "rail-popular", "rail-newest", "rail-rated"];
+type RailItemId = string;
 
 function posterUrl(s: SeriesListItem): string | null {
   return s.cover || null;
@@ -46,8 +50,6 @@ function backdropUrl(s: SeriesListItem): string | null {
 
 export default function SeriesPage() {
   const navigate = useNavigate();
-  const [params, setParams] = useSearchParams();
-
   const isCurated = () => authUser()?.view_mode === "curated";
 
   const [genres] = createResource(
@@ -58,39 +60,53 @@ export default function SeriesPage() {
     () => !isCurated(),
     (fallback) => (fallback ? listSerieCategories() : Promise.resolve([])),
   );
+  const [popular] = createResource(() =>
+    listSeries({ sort: "popularity_desc", per_page: HERO_COUNT }),
+  );
 
-  const filterId = createMemo<number | undefined>(() => {
-    const raw = params.filter;
-    if (!raw) return undefined;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : undefined;
-  });
-
-  function makeFilterArgs(sort: SeriesSort) {
-    const id = filterId();
-    if (id === undefined) return { sort };
-    return isCurated() ? { sort, genre_id: id } : { sort, category_id: id };
+  interface RailDescriptor {
+    id: number;
+    label: string;
+    count?: number;
+    filterKey: "genre_id" | "category_id";
   }
 
-  const [popular] = createResource(
-    () => makeFilterArgs("popularity_desc"),
-    (k) => listSeries({ ...k, per_page: RAIL_PAGE_SIZE }),
-  );
-  const [newest] = createResource(
-    () => makeFilterArgs("last_modified_desc"),
-    (k) => listSeries({ ...k, per_page: RAIL_PAGE_SIZE }),
-  );
-  const [topRated] = createResource(
-    () => makeFilterArgs("rating_desc"),
-    (k) => listSeries({ ...k, per_page: RAIL_PAGE_SIZE }),
-  );
+  const rails = createMemo<RailDescriptor[]>(() => {
+    if (isCurated()) {
+      const gs: GenreCountOut[] = genres() ?? [];
+      return gs.map((g) => ({
+        id: g.id,
+        label: g.name,
+        count: g.count,
+        filterKey: "genre_id",
+      }));
+    }
+    const cs: FlatCategory[] = categories() ?? [];
+    return cs.map((c) => ({
+      id: c.category_id,
+      label: c.name,
+      filterKey: "category_id",
+    }));
+  });
 
-  const [zone, setZone] = createSignal<Zone>("hero");
+  const sidebarItems = createMemo<SidebarItem[]>(() => [
+    { id: "__all__", label: "All series" },
+    ...rails().map((r) => ({ id: r.id, label: r.label, count: r.count })),
+  ]);
+
+  const rightZones = createMemo<RailItemId[]>(() => [
+    "hero",
+    "sort",
+    ...rails().map((r) => `rail:${r.id}`),
+  ]);
+
+  const [zone, setZone] = createSignal<"sidebar" | RailItemId>("hero");
   const [sidebarIdx, setSidebarIdx] = createSignal(0);
   const [heroIdx, setHeroIdx] = createSignal(0);
-  const [popIdx, setPopIdx] = createSignal(0);
-  const [newIdx, setNewIdx] = createSignal(0);
-  const [ratIdx, setRatIdx] = createSignal(0);
+  const [sortIdx, setSortIdx] = createSignal(0);
+  const [railIdx, setRailIdx] = createSignal<Record<number, number>>({});
+
+  const railRefs = new Map<number, HTMLDivElement>();
 
   const { isScopeOwner, setActive } = useNavigationScope("series", {
     priority: 0,
@@ -98,38 +114,33 @@ export default function SeriesPage() {
   });
   createEffect(() => setActive(appShellZone() === "content"));
 
-  const sidebarItems = createMemo<SidebarItem[]>(() => {
-    if (isCurated()) {
-      const gs = genres() ?? [];
-      return [
-        { id: "__all__", label: "All series" },
-        ...gs.map((g) => ({ id: g.id, label: g.name, count: g.count })),
-      ];
-    }
-    const cats = categories() ?? [];
-    return [
-      { id: "__all__", label: "All series" },
-      ...cats.map((c) => ({ id: c.category_id, label: c.name })),
-    ];
-  });
-
   createEffect(() => {
-    const items = sidebarItems();
-    const id = filterId();
-    const idx = id === undefined ? 0 : items.findIndex((it) => it.id === id);
-    if (idx >= 0) setSidebarIdx(idx);
+    const cur = seriesSort();
+    const idx = SERIES_SORT_OPTIONS.findIndex((o) => o.value === cur);
+    if (idx >= 0) setSortIdx(idx);
   });
 
-  function pickSidebar(idx: number) {
+  function getRailIdx(id: number): number {
+    return railIdx()[id] ?? 0;
+  }
+  function setRailIdxFor(id: number, n: number) {
+    setRailIdx((prev) => ({ ...prev, [id]: n }));
+  }
+
+  function pickSidebar(idx: number, dropFocus: boolean) {
     const item = sidebarItems()[idx];
     if (!item) return;
     setSidebarIdx(idx);
-    if (item.id === "__all__") setParams({ filter: undefined });
-    else setParams({ filter: String(item.id) });
-    setHeroIdx(0);
-    setPopIdx(0);
-    setNewIdx(0);
-    setRatIdx(0);
+
+    if (item.id === "__all__") {
+      if (dropFocus) setZone("hero");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    const railId = item.id as number;
+    const el = railRefs.get(railId);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (dropFocus) setZone(`rail:${railId}`);
   }
 
   const heroItems = createMemo<HeroItem[]>(() => {
@@ -148,6 +159,17 @@ export default function SeriesPage() {
     }));
   });
 
+  createEffect(() => {
+    const cur = zone();
+    if (typeof cur === "string" && cur.startsWith("rail:")) {
+      const id = Number(cur.slice(5));
+      const el = railRefs.get(id);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else if (cur === "hero") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  });
+
   function moveVertical(delta: 1 | -1) {
     const cur = zone();
     if (cur === "sidebar") {
@@ -158,17 +180,18 @@ export default function SeriesPage() {
         return;
       }
       if (next >= items.length) return;
-      pickSidebar(next);
+      pickSidebar(next, false);
       return;
     }
-    const idx = ZONES_RIGHT.indexOf(cur);
+    const zs = rightZones();
+    const idx = zs.indexOf(cur as RailItemId);
     const next = idx + delta;
     if (next < 0) {
       setAppShellZone("nav");
       return;
     }
-    if (next >= ZONES_RIGHT.length) return;
-    setZone(ZONES_RIGHT[next]);
+    if (next >= zs.length) return;
+    setZone(zs[next]);
   }
 
   function moveHorizontal(delta: 1 | -1) {
@@ -179,7 +202,7 @@ export default function SeriesPage() {
         setZone("hero");
         return;
       }
-      setZone("hero");
+      pickSidebar(sidebarIdx(), true);
       return;
     }
     if (cur === "hero") {
@@ -193,48 +216,42 @@ export default function SeriesPage() {
       setHeroIdx((i) => (i + delta + total) % total);
       return;
     }
-    const [getter, setter, items] = (() => {
-      switch (cur) {
-        case "rail-popular":
-          return [popIdx, setPopIdx, popular()?.items ?? []] as const;
-        case "rail-newest":
-          return [newIdx, setNewIdx, newest()?.items ?? []] as const;
-        case "rail-rated":
-          return [ratIdx, setRatIdx, topRated()?.items ?? []] as const;
-        default:
-          return [() => 0, () => {}, [] as SeriesListItem[]] as const;
+    if (cur === "sort") {
+      const max = SERIES_SORT_OPTIONS.length - 1;
+      if (delta < 0 && sortIdx() === 0) {
+        setSidebarOpen(true);
+        setZone("sidebar");
+        return;
       }
-    })();
-    if (delta < 0 && (items.length === 0 || getter() === 0)) {
-      setSidebarOpen(true);
-      setZone("sidebar");
+      setSortIdx((i) => Math.min(Math.max(i + delta, 0), max));
       return;
     }
-    (setter as (n: number) => void)(
-      Math.min(Math.max(getter() + delta, 0), items.length - 1),
-    );
+    if (typeof cur === "string" && cur.startsWith("rail:")) {
+      const id = Number(cur.slice(5));
+      if (delta < 0 && getRailIdx(id) === 0) {
+        setSidebarOpen(true);
+        setZone("sidebar");
+        return;
+      }
+      setRailIdxFor(id, Math.max(getRailIdx(id) + delta, 0));
+    }
   }
 
   function activate() {
     const cur = zone();
-    if (cur === "sidebar") return;
+    if (cur === "sidebar") {
+      pickSidebar(sidebarIdx(), true);
+      return;
+    }
     if (cur === "hero") {
       const item = heroItems()[heroIdx()];
       if (item) navigate(`/series/${item.id}`);
       return;
     }
-    const item = (() => {
-      switch (cur) {
-        case "rail-popular":
-          return popular()?.items[popIdx()];
-        case "rail-newest":
-          return newest()?.items[newIdx()];
-        case "rail-rated":
-          return topRated()?.items[ratIdx()];
-      }
-      return undefined;
-    })();
-    if (item) navigate(`/series/${item.id}`);
+    if (cur === "sort") {
+      setSeriesSort(SERIES_SORT_OPTIONS[sortIdx()].value);
+      return;
+    }
   }
 
   function onKey(e: KeyboardEvent) {
@@ -270,10 +287,16 @@ export default function SeriesPage() {
         <Sidebar
           title={isCurated() ? "Genres" : "Categories"}
           items={sidebarItems()}
-          activeId={() => (filterId() === undefined ? "__all__" : filterId()!)}
+          activeId={() => {
+            const cur = zone();
+            if (typeof cur === "string" && cur.startsWith("rail:")) {
+              return Number(cur.slice(5));
+            }
+            return "__all__";
+          }}
           focusedIdx={sidebarIdx}
           isFocused={() => zone() === "sidebar"}
-          onSelect={(_, i) => pickSidebar(i)}
+          onSelect={(_, i) => pickSidebar(i, true)}
         />
       </Show>
 
@@ -288,7 +311,7 @@ export default function SeriesPage() {
           when={heroItems().length > 0}
           fallback={
             <div class="h-[40vh] flex items-center justify-center text-zinc-600 text-sm">
-              <Show when={popular.loading} fallback={<span>No series in this category.</span>}>
+              <Show when={popular.loading} fallback={<span>No series yet.</span>}>
                 Loading…
               </Show>
             </div>
@@ -300,58 +323,77 @@ export default function SeriesPage() {
             onIndexChange={setHeroIdx}
             paused={() => zone() === "hero"}
             isFocused={() => zone() === "hero"}
-            actions={[{ label: "Open", primary: true, onClick: activate }]}
+            actions={[
+              {
+                label: "Open",
+                primary: true,
+                onClick: () => {
+                  const item = heroItems()[heroIdx()];
+                  if (item) navigate(`/series/${item.id}`);
+                },
+              },
+            ]}
           />
         </Show>
 
-        <div class="mt-6">
-          <Rail
-            title="Most Popular"
-            items={popular()?.items ?? []}
-            selectedIndex={popIdx}
-            isFocused={() => zone() === "rail-popular"}
-            renderItem={(item, focused) => (
-              <PosterCard
-                title={item.name}
-                imageUrl={posterUrl(item)}
-                focused={() => focused}
-                onClick={() => navigate(`/series/${item.id}`)}
-                meta={
-                  <Show when={item.tmdb_vote_average != null}>
-                    <span>★ {item.tmdb_vote_average!.toFixed(1)}</span>
-                  </Show>
-                }
-              />
-            )}
-          />
-          <Rail
-            title="Newest"
-            items={newest()?.items ?? []}
-            selectedIndex={newIdx}
-            isFocused={() => zone() === "rail-newest"}
-            renderItem={(item, focused) => (
-              <PosterCard
-                title={item.name}
-                imageUrl={posterUrl(item)}
-                focused={() => focused}
-                onClick={() => navigate(`/series/${item.id}`)}
-              />
-            )}
-          />
-          <Rail
-            title="Top Rated"
-            items={topRated()?.items ?? []}
-            selectedIndex={ratIdx}
-            isFocused={() => zone() === "rail-rated"}
-            renderItem={(item, focused) => (
-              <PosterCard
-                title={item.name}
-                imageUrl={posterUrl(item)}
-                focused={() => focused}
-                onClick={() => navigate(`/series/${item.id}`)}
-              />
-            )}
-          />
+        <SortSelector
+          value={seriesSort}
+          options={SERIES_SORT_OPTIONS}
+          onChange={(v) => setSeriesSort(v)}
+          isFocused={() => zone() === "sort"}
+          focusedIdx={sortIdx}
+        />
+
+        <div class="space-y-2 pb-12">
+          <For each={rails()}>
+            {(rail) => {
+              const railZoneId: RailItemId = `rail:${rail.id}`;
+              return (
+                <LazyRail<SeriesListItem>
+                  ref={(el) => railRefs.set(rail.id, el)}
+                  title={
+                    rail.count != null
+                      ? `${rail.label} · ${rail.count.toLocaleString()}`
+                      : rail.label
+                  }
+                  reactiveKey={() =>
+                    `${rail.id}:${rail.filterKey}:${seriesSort()}`
+                  }
+                  fetch={async () => {
+                    const args: {
+                      sort: SeriesSort;
+                      per_page: number;
+                      genre_id?: number;
+                      category_id?: number;
+                    } = { sort: seriesSort(), per_page: RAIL_PAGE_SIZE };
+                    if (rail.filterKey === "genre_id") args.genre_id = rail.id;
+                    else args.category_id = rail.id;
+                    const page = await listSeries(args);
+                    return page.items;
+                  }}
+                  isFocused={() => zone() === railZoneId}
+                  selectedIndex={() => getRailIdx(rail.id)}
+                  renderItem={(item, focused, idx) => (
+                    <PosterCard
+                      title={item.name}
+                      imageUrl={posterUrl(item)}
+                      focused={() => focused}
+                      onClick={() => {
+                        setRailIdxFor(rail.id, idx);
+                        setZone(railZoneId);
+                        navigate(`/series/${item.id}`);
+                      }}
+                      meta={
+                        <Show when={item.tmdb_vote_average != null}>
+                          <span>★ {item.tmdb_vote_average!.toFixed(1)}</span>
+                        </Show>
+                      }
+                    />
+                  )}
+                />
+              );
+            }}
+          </For>
         </div>
       </div>
     </div>
