@@ -1,0 +1,548 @@
+/*
+ * movies.css — sp-browser shell + sidebar + genre panel + grid + modal.
+ * Lifted verbatim from the legacy React TV app
+ * (`/var/www/ottapi/tv_app_v2/src/App.css` 2670–2920, 2924–2999,
+ * 3052–3146, 3460–3506, 3508–3650, 3760–3782, 4860–4863).
+ *
+ * Coupled to the lifted Sidebar.tsx (uses .sidebar / .sidebar-item) and
+ * the Movies/Series page wrappers that wear `.sp-browser` /
+ * `.movies-page`. The page-overrides under `.movies-page` only fire on
+ * the Movies route, leaving the same shell free to support Series with
+ * its own variant later.
+ */
+
+/* ── Page shell ─────────────────────────────────────────────────────────── */
+.series-page {
+    height: 100vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: #080808;
+    scrollbar-width: none;
+}
+.series-page::-webkit-scrollbar { display: none; }
+
+.series-page.sp-browser {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.sp-browser-loading {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Body: sidebar (left) + panel (right), fills remaining height */
+.sp-body {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: hidden;
+    min-height: 0;
+}
+.sp-body.sp-body--sidebar-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+/* ── Sidebar (canonical shared styles — Sidebar.tsx) ────────────────────── */
+.sidebar {
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid rgba(255,255,255,0.07);
+    background: #0f0f0f;
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+.sidebar--focused { border-right-color: rgba(255,255,255,0.12); }
+
+/* Series page variant: transparent / collapsible genre rail */
+.sp-series-sidebar {
+    position: fixed;
+    top: 70px;
+    left: 0;
+    bottom: 0;
+    width: 260px;
+    z-index: 1400;
+    border-right: none;
+    background: linear-gradient(
+        90deg,
+        rgba(0, 0, 0, 0.96) 0%,
+        rgba(0, 0, 0, 0.86) 32%,
+        rgba(0, 0, 0, 0.58) 58%,
+        rgba(0, 0, 0, 0.22) 78%,
+        rgba(0, 0, 0, 0) 100%
+    );
+    transition: transform 220ms ease, opacity 180ms ease, border-color 180ms ease;
+}
+.sp-series-sidebar.sidebar--focused {
+    border-right: none;
+}
+.sp-series-sidebar .sidebar-hdr {
+    border-bottom: none;
+}
+.sp-series-sidebar .sidebar-item,
+.sp-series-sidebar .sidebar-item:hover,
+.sp-series-sidebar .sidebar-item.focused,
+.sp-series-sidebar .sidebar-item.active,
+.sp-series-sidebar .sidebar-item.focused.active {
+    border-left: none;
+}
+.sp-series-sidebar.sp-series-sidebar--collapsed {
+    transform: translateX(-100%);
+    opacity: 0;
+    border-right-color: transparent;
+    pointer-events: none;
+}
+
+.sidebar-hdr {
+    padding: 20px 20px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    flex-shrink: 0;
+}
+.sidebar-title {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #fff;
+    margin: 0;
+}
+
+.sidebar-list {
+    font-size: 1.1rem;
+    flex: 1;
+    overflow-y: auto;
+    padding: 6px 0;
+    scrollbar-width: none;
+}
+.sidebar-list::-webkit-scrollbar { display: none; }
+
+.sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    color: rgba(255,255,255,0.52);
+}
+.sidebar-item:hover,
+.sidebar-item.focused {
+    background: rgba(255,255,255,0.07);
+    color: rgba(255,255,255,0.88);
+    border-left-color: rgba(255,255,255,0.22);
+}
+.sidebar-item.active {
+    color: #fff;
+    background: rgba(229,9,20,0.09);
+    border-left-color: #e50914;
+}
+.sidebar-item.focused.active {
+    background: rgba(229,9,20,0.18);
+}
+
+.sidebar-item-icon  { flex-shrink: 0; font-size: 0.9rem; }
+.sidebar-item-label {
+    flex: 1;
+    font-size: 0.87rem;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sidebar-item-count {
+    font-size: 0.68rem;
+    color: rgba(255,255,255,0.28);
+    flex-shrink: 0;
+}
+.sidebar-empty {
+    padding: 24px 20px;
+    color: rgba(255,255,255,0.3);
+    font-size: 0.88rem;
+}
+
+/* ── Main panel (genre listing) ─────────────────────────────────────────── */
+.sp-genre-panel {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: transparent;
+}
+.sp-genre-panel--active .sp-genre-panel-hdr { border-bottom-color: transparent; }
+
+.sp-genre-panel-hdr {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 18px 24px 14px;
+    border-bottom: none;
+    flex-shrink: 0;
+    transition: none;
+    background: transparent;
+}
+.sp-genre-panel-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #fff;
+    margin: 0;
+}
+.sp-genre-panel-count {
+    font-size: 0.8rem;
+    color: rgba(255,255,255,0.32);
+}
+
+/* Movies-only compact header + page-scoped overrides */
+.movies-page .sp-genre-panel-hdr {
+    gap: 8px;
+    padding: 8px 16px 6px;
+    min-height: 0;
+    position: relative;
+    z-index: 5;
+    background: transparent;
+}
+.movies-page .sp-genre-panel-title { font-size: 0.76rem; }
+.movies-page .sp-genre-panel-count { font-size: 0.5rem; }
+.movies-page .sp-genre-panel { position: relative; }
+.movies-page .sp-genre-panel::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 44px;
+    pointer-events: none;
+    z-index: 4;
+    background: linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0.95) 0%,
+        rgba(0, 0, 0, 0.5) 42%,
+        rgba(0, 0, 0, 0) 100%
+    );
+}
+.movies-page .sp-genre-grid.sp-genre-grid--movies {
+    margin-top: -18px;
+    padding-top: 30px;
+}
+
+/* Movies-only modal sizing overrides */
+.movies-page .sp-modal-backdrop {
+    align-items: center;
+    padding: 24px;
+}
+.movies-page .mp-modal-panel {
+    width: min(72vw, 860px);
+    max-width: 860px;
+    height: min(86vh, 820px);
+    border-radius: 16px;
+}
+.movies-page .mp-modal-content {
+    gap: 10px;
+    padding: 40px 22px 18px;
+}
+.movies-page .mp-modal-title {
+    font-size: clamp(1rem, 2vw, 1.6rem);
+}
+.movies-page .mp-modal-meta {
+    gap: 8px;
+    font-size: 0.62rem;
+}
+.movies-page .mp-modal-actions {
+    gap: 6px;
+}
+.movies-page .mp-modal-actions .hp-btn {
+    padding: 5px 10px;
+    font-size: 0.62rem;
+}
+.movies-page .mp-modal-plot {
+    max-width: 620px;
+    font-size: 0.62rem;
+    line-height: 1.35;
+}
+.movies-page .mp-modal-cast {
+    max-width: 620px;
+    font-size: 0.58rem;
+    line-height: 1.4;
+}
+.movies-page .sp-modal-close {
+    width: 28px;
+    height: 28px;
+    font-size: 0.76rem;
+    top: 10px;
+    right: 10px;
+}
+.movies-page .mp-trailer-wrap {
+    align-self: center;
+    width: min(460px, 88%);
+    margin: 8px auto 0;
+}
+.movies-page .mp-trailer-frame {
+    aspect-ratio: 16 / 9;
+    max-height: 220px;
+}
+
+/* ── Grid + skeleton + empty/error ──────────────────────────────────────── */
+.sp-genre-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, 95px);
+    gap: 8px;
+    padding: 22px 30px 28px;
+    overflow-y: auto;
+    flex: 1;
+    align-content: start;
+    justify-content: center;
+    scrollbar-width: none;
+    background: transparent;
+}
+.sp-genre-grid::-webkit-scrollbar { display: none; }
+
+.sp-genre-grid .hp-card--series { width: 95px; flex-shrink: 0; }
+.sp-genre-grid .sp-skeleton-card { width: 95px; }
+.sp-genre-grid .hp-card--series:hover,
+.sp-genre-grid .hp-card--series.focused {
+    transform: scale(1.22);
+    transform-origin: top center;
+}
+.sp-genre-grid.sp-genre-grid--movies {
+    grid-template-columns: repeat(auto-fill, 150px);
+}
+.sp-genre-grid.sp-genre-grid--movies .hp-card--movie {
+    width: 150px;
+}
+/* MovieMediaCard width inside the grid (Solid port doesn't use hp-card--*) */
+.sp-genre-grid.sp-genre-grid--movies > .mc-card.mc-card--movie {
+    width: 150px;
+}
+.sp-genre-grid > .mc-card.mc-card--series {
+    width: 95px;
+}
+.sp-genre-grid.sp-genre-grid--native-fixed-movies {
+    grid-template-columns: repeat(6, 150px);
+}
+.sp-genre-grid.sp-genre-grid--native-fixed-series {
+    grid-template-columns: repeat(9, 95px);
+}
+.sp-grid-load-sentinel {
+    grid-column: 1 / -1;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255,255,255,0.65);
+    font-size: 0.85rem;
+}
+
+.sp-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 60px 0;
+    color: rgba(255,255,255,0.3);
+    font-size: 1rem;
+}
+.sp-empty-icon { font-size: 3rem; opacity: 0.4; }
+
+/* ── Skeleton card ──────────────────────────────────────────────────────── */
+.sp-skeleton-card {
+    flex-shrink: 0;
+    width: 95px;
+}
+.sp-skeleton-poster {
+    width: 95px;
+    height: 143px;
+    border-radius: 10px;
+    background: linear-gradient(
+        90deg,
+        rgba(255,255,255,0.04) 0%,
+        rgba(255,255,255,0.08) 50%,
+        rgba(255,255,255,0.04) 100%
+    );
+    background-size: 200% 100%;
+    animation: skeletonShimmer 1.6s ease-in-out infinite;
+}
+.sp-skeleton-line {
+    height: 9px;
+    border-radius: 5px;
+    margin-top: 10px;
+    background: rgba(255,255,255,0.06);
+    animation: skeletonShimmer 1.6s ease-in-out infinite;
+}
+.sp-skeleton-line.short { width: 60%; }
+
+@keyframes skeletonShimmer {
+    0%   { background-position: -200% 0; }
+    100% { background-position:  200% 0; }
+}
+
+/* ── Modal ──────────────────────────────────────────────────────────────── */
+.sp-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 2500;
+    background: rgba(0,0,0,0.88);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    animation: spBackdropIn 0.25s ease;
+}
+
+@keyframes spBackdropIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.sp-modal-panel {
+    position: relative;
+    width: 100%;
+    max-width: 1100px;
+    height: 92vh;
+    background: #0e0e0e;
+    border-radius: 20px 20px 0 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: spPanelUp 0.38s cubic-bezier(0.165, 0.84, 0.44, 1) both;
+    box-shadow: 0 -8px 60px rgba(0,0,0,0.8);
+}
+
+.mp-modal-panel {
+    max-width: 1240px;
+    height: 92vh;
+    background: #000;
+}
+.mp-modal-bg {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+.mp-modal-bg-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center 18%;
+    filter: brightness(0.42);
+    transform: scale(1.03);
+}
+.mp-modal-bg-fallback {
+    position: absolute;
+    inset: 0;
+}
+.mp-modal-overlay {
+    position: absolute;
+    inset: 0;
+    background:
+        linear-gradient(to top, rgba(0,0,0,0.92) 8%, rgba(0,0,0,0.55) 45%, rgba(0,0,0,0.25) 100%),
+        linear-gradient(to right, rgba(0,0,0,0.72) 0%, rgba(0,0,0,0.35) 45%, rgba(0,0,0,0.12) 100%);
+    z-index: 1;
+}
+.mp-modal-content {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 64px 34px 30px;
+    height: 100%;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+.mp-modal-title {
+    font-size: clamp(1.8rem, 3.8vw, 3.2rem);
+    font-weight: 900;
+    color: #fff;
+    margin: 0;
+    line-height: 1.06;
+}
+.mp-modal-meta {
+    display: flex;
+    gap: 10px;
+    color: rgba(255,255,255,0.72);
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+.mp-modal-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.mp-modal-plot {
+    max-width: 760px;
+    color: rgba(255,255,255,0.84);
+    font-size: 0.95rem;
+    line-height: 1.6;
+    margin: 0;
+}
+.mp-modal-cast {
+    max-width: 760px;
+    color: rgba(255,255,255,0.68);
+    font-size: 0.86rem;
+    line-height: 1.5;
+    margin: 0;
+}
+.mp-trailer-wrap {
+    margin-top: 6px;
+    width: min(860px, 100%);
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: 0 12px 44px rgba(0,0,0,0.5);
+    background: #000;
+}
+.mp-trailer-frame {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border: 0;
+    display: block;
+}
+
+@keyframes spPanelUp {
+    from { transform: translateY(60px); opacity: 0.4; }
+    to   { transform: translateY(0);    opacity: 1;   }
+}
+
+/* ── Modal cast block (shared with series detail) ───────────────────────── */
+.sp-modal-cast {
+    font-size: 0.75rem;
+    color: rgba(255,255,255,0.38);
+    margin: 10px 0 0;
+    line-height: 1.4;
+}
+.sp-modal-cast-label {
+    font-weight: 700;
+    color: rgba(255,255,255,0.55);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 0.68rem;
+}
+
+/* Close button */
+.sp-modal-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 10;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.55);
+    border: 1px solid rgba(255,255,255,0.14);
+    color: rgba(255,255,255,0.7);
+    font-size: 1.1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s, color 0.15s;
+    backdrop-filter: blur(10px);
+}
+.sp-modal-close:hover {
+    background: rgba(229,9,20,0.6);
+    color: #fff;
+}
+
+/* Modal action focus ring (mp-modal-action-focused, App.css 4860) */
+.mp-modal-action-focused {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 0 24px rgba(255, 255, 255, 0.28);
+    transform: translateY(-1px);
+}

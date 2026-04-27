@@ -79,7 +79,8 @@ export function listLive(opts: LiveListOpts = {}): Promise<Page<LiveStreamItem>>
 }
 
 export interface MovieListOpts {
-  category_id?: number;
+  /** Single FK id, or list joined as `1,2,3` (backend accepts both). */
+  category_id?: number | string;
   language?: string;
   genre_id?: number;
   sort?: MovieSort;
@@ -92,7 +93,7 @@ export function listMovies(opts: MovieListOpts = {}): Promise<Page<MovieListItem
 }
 
 export interface SeriesListOpts {
-  category_id?: number;
+  category_id?: number | string;
   language?: string;
   genre_id?: number;
   sort?: SeriesSort;

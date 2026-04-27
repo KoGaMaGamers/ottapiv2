@@ -1,4 +1,23 @@
-import { createEffect, For, type JSX, Show } from "solid-js";
+/**
+ * Sidebar — vertical D-pad-navigable category list.
+ *
+ * Faithful Solid port of the legacy `Sidebar.jsx` (the canonical shared
+ * component used by Movies, Series, Live). Pure presentational — the
+ * parent owns `activeId` (selected category, red bg) and `focusedIdx`
+ * (D-pad cursor, white border) and forwards key events. This component
+ * only paints the three states (active / focused / idle).
+ *
+ * The legacy CSS classes are coupled here:
+ *   .sidebar / .sidebar--focused
+ *   .sidebar-hdr / .sidebar-title
+ *   .sidebar-list
+ *   .sidebar-item / .sidebar-item.focused / .sidebar-item.active
+ *   .sidebar-item-icon / .sidebar-item-label / .sidebar-item-count
+ *   .sidebar-empty
+ *   .sp-series-sidebar / .sp-series-sidebar--collapsed (Movies/Series)
+ */
+
+import { createEffect, For, Show, type JSX } from "solid-js";
 
 export interface SidebarItem {
   id: string | number;
@@ -7,61 +26,64 @@ export interface SidebarItem {
   icon?: JSX.Element;
 }
 
-/**
- * Vertical D-pad-navigable sidebar. Pure presentational — parent owns
- * `activeId` (currently selected category) and `focusedIdx` (D-pad
- * cursor) and forwards key events; this component just paints the
- * three states (active / focused / idle).
- *
- * Used by Movies, Series, Live (with `headerSlot` for the back button)
- * and Profile pages.
- */
 export interface SidebarProps {
   title?: string;
-  /** Render an arbitrary node in place of the default title (e.g. back button). */
+  /** Render an arbitrary node in place of the default title (e.g. a back button). */
   headerSlot?: JSX.Element;
   items: SidebarItem[];
-  /** id of the currently SELECTED category (red bg). */
+  /** id of the currently SELECTED item (red bg). */
   activeId: () => string | number | null;
   /** Index of the D-pad cursor (white border). -1 to hide. */
   focusedIdx: () => number;
-  /** True when the sidebar zone is the active region (subtle bg highlight). */
+  /** True when the sidebar zone owns input (subtle bg highlight). */
   isFocused: () => boolean;
   onSelect?: (item: SidebarItem, index: number) => void;
   emptyLabel?: string;
+  /**
+   * Variant class for page-specific behaviour. Movies / Series pages
+   * pass `"sp-series-sidebar"` and toggle the
+   * `sp-series-sidebar--collapsed` modifier via `collapsed`. Pure
+   * className passthrough — keeps CSS targeting in stylesheets.
+   */
   class?: string;
+  /** Apply the `--collapsed` modifier (slides off-screen). */
+  collapsed?: () => boolean;
 }
 
-export default function Sidebar(props: SidebarProps) {
+export default function Sidebar(props: SidebarProps): JSX.Element {
   let listRef: HTMLDivElement | undefined;
-  let activeRef: HTMLDivElement | undefined;
 
-  // Auto-scroll the focused row into view (legacy behavior). Track
-  // focusedIdx to re-run; don't bind the result.
+  // Auto-scroll the focused row into view (legacy behaviour).
   createEffect(() => {
-    props.focusedIdx();
-    if (activeRef) {
-      activeRef.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }
+    const i = props.focusedIdx();
+    if (!props.isFocused() || !listRef) return;
+    const child = listRef.children[i] as HTMLElement | undefined;
+    child?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
 
+  const rootClass = (): string => {
+    const parts = ["sidebar"];
+    if (props.isFocused()) parts.push("sidebar--focused");
+    if (props.class) parts.push(props.class);
+    if (props.collapsed?.() && props.class?.includes("sp-series-sidebar")) {
+      parts.push("sp-series-sidebar--collapsed");
+    }
+    return parts.join(" ");
+  };
+
   return (
-    <aside
-      class={`flex flex-col w-64 h-full border-r border-zinc-800 transition-colors ${
-        props.isFocused() ? "bg-zinc-900/60" : "bg-zinc-950"
-      } ${props.class ?? ""}`}
-    >
-      <div class="px-4 py-3 border-b border-zinc-800">
+    <aside class={rootClass()}>
+      <div class="sidebar-hdr">
         {props.headerSlot ?? (
-          <h2 class="text-sm font-medium text-zinc-400">{props.title}</h2>
+          <h2 class="sidebar-title">{props.title ?? ""}</h2>
         )}
       </div>
 
-      <div ref={listRef} class="flex-1 overflow-y-auto py-2">
+      <div ref={(el) => (listRef = el)} class="sidebar-list">
         <Show
           when={props.items.length > 0}
           fallback={
-            <p class="px-4 py-2 text-sm text-zinc-600">
+            <p class="sidebar-empty">
               {props.emptyLabel ?? "Nothing here"}
             </p>
           }
@@ -73,32 +95,26 @@ export default function Sidebar(props: SidebarProps) {
               const isActive = () =>
                 props.activeId() != null &&
                 String(item.id) === String(props.activeId());
-
+              const cls = () => {
+                const c = ["sidebar-item"];
+                if (isFocused()) c.push("focused");
+                if (isActive()) c.push("active");
+                return c.join(" ");
+              };
               return (
                 <div
-                  ref={(el) => {
-                    if (isFocused()) activeRef = el;
-                  }}
+                  class={cls()}
                   onClick={() => props.onSelect?.(item, i())}
-                  class={`flex items-center gap-2 px-4 py-2 cursor-pointer text-sm transition-colors ${
-                    isActive()
-                      ? "bg-violet-600/30 text-violet-200"
-                      : "text-zinc-400"
-                  } ${
-                    isFocused()
-                      ? "ring-1 ring-violet-400 ring-inset bg-zinc-800/50"
-                      : ""
-                  } hover:text-zinc-200`}
                 >
-                  {item.icon && (
-                    <span class="shrink-0 w-5 text-center">{item.icon}</span>
-                  )}
-                  <span class="flex-1 truncate">{item.label}</span>
-                  {item.count != null && (
-                    <span class="shrink-0 text-xs text-zinc-600">
-                      {item.count.toLocaleString()}
+                  <Show when={item.icon}>
+                    <span class="sidebar-item-icon">{item.icon}</span>
+                  </Show>
+                  <span class="sidebar-item-label">{item.label}</span>
+                  <Show when={item.count != null}>
+                    <span class="sidebar-item-count">
+                      {item.count!.toLocaleString()}
                     </span>
-                  )}
+                  </Show>
                 </div>
               );
             }}

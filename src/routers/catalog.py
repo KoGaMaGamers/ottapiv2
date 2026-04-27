@@ -59,6 +59,32 @@ def _paginate(query, page: int, per_page: int):
     return items, total
 
 
+def _parse_id_list(raw: Optional[str]) -> Optional[List[int]]:
+    """
+    Accept either a single integer ("5") or a comma-separated list ("1,2,3")
+    and return a deduped list[int]. Returns None when the value is empty/None.
+    Skips non-numeric tokens silently — clients can construct from typed prefs
+    without worrying about stray whitespace.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    out: List[int] = []
+    seen = set()
+    for tok in s.split(","):
+        t = tok.strip()
+        if not t.lstrip("-").isdigit():
+            continue
+        v = int(t)
+        if v in seen:
+            continue
+        seen.add(v)
+        out.append(v)
+    return out or None
+
+
 class Page(BaseModel):
     items: list
     total: int
@@ -433,15 +459,22 @@ def list_serie_categories(
 
 @router.get("/live")
 def list_live_streams(
-    category_id: Optional[int] = Query(None, description="LiveCategory.id (FK)"),
+    category_id: Optional[str] = Query(
+        None,
+        description="LiveCategory.id (FK). Accepts single int or comma-separated list (e.g. 1,2,3).",
+    ),
     page: int = Query(1, ge=1),
     per_page: int = Query(DEFAULT_PER_PAGE, ge=1, le=MAX_PER_PAGE),
     user: IPTVUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     q = db.query(LiveStream).filter(LiveStream.provider_id == user.provider_id)
-    if category_id is not None:
-        q = q.filter(LiveStream.live_category_id == category_id)
+    cat_ids = _parse_id_list(category_id)
+    if cat_ids:
+        if len(cat_ids) == 1:
+            q = q.filter(LiveStream.live_category_id == cat_ids[0])
+        else:
+            q = q.filter(LiveStream.live_category_id.in_(cat_ids))
     q = q.order_by(LiveStream.xtream_live_id.asc(), LiveStream.id.asc())
     items, total = _paginate(q, page, per_page)
     return _page([_live_to_item(x) for x in items], total, page, per_page)
@@ -449,7 +482,10 @@ def list_live_streams(
 
 @router.get("/movies")
 def list_movies(
-    category_id: Optional[int] = Query(None, description="MovieCategory.id (FK)"),
+    category_id: Optional[str] = Query(
+        None,
+        description="MovieCategory.id (FK). Accepts single int or comma-separated list (e.g. 1,2,3).",
+    ),
     language: Optional[str] = Query(None, max_length=10),
     genre_id: Optional[int] = Query(None, description="TMDBGenre.id"),
     sort: Literal["added_desc", "added_asc", "year_desc", "year_asc", "rating_desc", "name_asc", "popularity_desc"] = "added_desc",
@@ -463,8 +499,12 @@ def list_movies(
         .options(selectinload(MovieStream.genres))
         .filter(MovieStream.provider_id == user.provider_id)
     )
-    if category_id is not None:
-        q = q.filter(MovieStream.movie_category_id == category_id)
+    cat_ids = _parse_id_list(category_id)
+    if cat_ids:
+        if len(cat_ids) == 1:
+            q = q.filter(MovieStream.movie_category_id == cat_ids[0])
+        else:
+            q = q.filter(MovieStream.movie_category_id.in_(cat_ids))
     if language:
         q = q.filter(MovieStream.language == language.upper())
     if genre_id is not None:
@@ -480,7 +520,10 @@ def list_movies(
 
 @router.get("/series")
 def list_series(
-    category_id: Optional[int] = Query(None, description="SerieCategory.id (FK)"),
+    category_id: Optional[str] = Query(
+        None,
+        description="SerieCategory.id (FK). Accepts single int or comma-separated list (e.g. 1,2,3).",
+    ),
     language: Optional[str] = Query(None, max_length=10),
     genre_id: Optional[int] = Query(None, description="TMDBGenre.id"),
     sort: Literal["last_modified_desc", "name_asc", "popularity_desc", "rating_desc"] = "last_modified_desc",
@@ -494,8 +537,12 @@ def list_series(
         .options(selectinload(SeriesStream.genres))
         .filter(SeriesStream.provider_id == user.provider_id)
     )
-    if category_id is not None:
-        q = q.filter(SeriesStream.series_category_id == category_id)
+    cat_ids = _parse_id_list(category_id)
+    if cat_ids:
+        if len(cat_ids) == 1:
+            q = q.filter(SeriesStream.series_category_id == cat_ids[0])
+        else:
+            q = q.filter(SeriesStream.series_category_id.in_(cat_ids))
     if language:
         q = q.filter(SeriesStream.language == language.upper())
     if genre_id is not None:
