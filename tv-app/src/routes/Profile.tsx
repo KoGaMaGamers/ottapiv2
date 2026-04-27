@@ -89,6 +89,13 @@ interface ProfileCat {
   category_name: string;
   name: string;
   language: string | null;
+  /**
+   * Xtream provider's category_id (separate from our DB FK `id`). Null
+   * when the category is synthetic / not directly fetchable from the
+   * provider. Mirrors the legacy `c.category_id != null` guard used in
+   * adult-channel discovery.
+   */
+  xtream_category_id: number | null;
 }
 
 interface AdultChannel {
@@ -119,6 +126,7 @@ function flattenLiveTree(roots: LiveCategoryNode[]): ProfileCat[] {
       category_name: root.name,
       name: root.name,
       language: null,
+      xtream_category_id: root.category_id,
     });
     for (const child of root.children ?? []) {
       out.push({
@@ -127,6 +135,7 @@ function flattenLiveTree(roots: LiveCategoryNode[]): ProfileCat[] {
         category_name: child.name,
         name: child.name,
         language: null,
+        xtream_category_id: child.category_id,
       });
       // Deeper nesting (rare) — flatten under the root for simplicity.
       for (const grand of child.children ?? []) {
@@ -136,6 +145,7 @@ function flattenLiveTree(roots: LiveCategoryNode[]): ProfileCat[] {
           category_name: grand.name,
           name: grand.name,
           language: null,
+          xtream_category_id: grand.category_id,
         });
       }
     }
@@ -150,6 +160,7 @@ function flatToProfile(list: FlatCategory[]): ProfileCat[] {
     category_name: c.name,
     name: c.name,
     language: c.language,
+    xtream_category_id: c.category_id,
   }));
 }
 
@@ -694,11 +705,14 @@ export default function Profile(): JSX.Element {
       const adultRootIds = new Set(
         liveCats.filter(isAdultCategory).map((c) => String(c.id)),
       );
-      // Leaves = non-root categories that are either themselves adult or
-      // children of an adult root.
+      // Leaves = categories with an Xtream provider id that are either
+      // themselves adult-named OR children of an adult root. The legacy
+      // guard `c.category_id != null` catches both real children and
+      // adult roots that hold streams directly (e.g. "For Adults" with
+      // no sub-categories).
       const adultLeaves = liveCats.filter(
         (c) =>
-          !isLiveRoot(c) &&
+          c.xtream_category_id != null &&
           (isAdultCategory(c) || adultRootIds.has(String(c.parent_id))),
       );
 
