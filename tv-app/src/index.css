@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./styles/hero.css";
+@import "./styles/cards.css";
 
 /* TV-app baseline:
  *   - Dark, Netflix-style background — no flash on transitions

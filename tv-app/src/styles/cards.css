@@ -1,0 +1,221 @@
+/*
+ * cards.css — lifted verbatim from the legacy React TV app
+ * (`/var/www/ottapi/tv_app_v2/src/App.css` lines 4865–5066,
+ * 4841–4847 watchlist override).
+ *
+ * Coupled to MovieMediaCard.tsx, SeriesMediaCard.tsx, LiveMediaCard.tsx.
+ * Page-level layout overrides (.home-page > .mc-card sizing, etc.) live
+ * with the page CSS — they'll be lifted alongside the page ports.
+ */
+
+/* -------------------------------------------------------------------------- */
+/* Media card redesign                                                        */
+/* -------------------------------------------------------------------------- */
+.mc-card {
+    width: 100%;
+    min-width: 0;
+    cursor: pointer;
+    transition: transform .18s ease, filter .18s ease;
+    transform-origin: center bottom;
+    will-change: transform;
+}
+
+.mc-media {
+    position: relative;
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, .06);
+}
+
+.mc-card--movie .mc-media {
+    aspect-ratio: 16 / 9;
+}
+
+.mc-card--series .mc-media {
+    aspect-ratio: 2 / 3;
+}
+
+.mc-card--live {
+    width: 98px;
+}
+
+.mc-card--live .mc-media--circle {
+    width: 72px;
+    height: 72px;
+    margin: 0 auto;
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.mc-card--live.is-compact {
+    width: 78px;
+}
+
+.mc-card--live.is-compact .mc-media--circle {
+    width: 58px;
+    height: 58px;
+}
+
+.mc-media-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.mc-media-fallback {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255, 255, 255, .5);
+    font-size: 1.25rem;
+    font-weight: 800;
+}
+
+.mc-title {
+    margin: 6px 2px 0;
+    font-size: .78rem;
+    line-height: 1.25;
+    color: rgba(255, 255, 255, .78);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mc-title-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.mc-title-row .mc-title {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.mc-title-language {
+    flex: 0 0 auto;
+    border-radius: 999px;
+    padding: 1px 6px;
+    font-size: .56rem;
+    font-weight: 800;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, .93);
+    background: linear-gradient(135deg, rgba(73, 130, 255, .75), rgba(107, 72, 255, .75));
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, .16) inset;
+}
+
+.mc-focus-meta {
+    position: absolute;
+    inset: auto 0 0;
+    padding: 7px 7px 6px;
+    opacity: 0;
+    pointer-events: none;
+    background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, .85) 60%, rgba(0, 0, 0, .95) 100%);
+    transition: opacity .18s ease;
+}
+
+.mc-focus-meta--live {
+    position: static;
+    inset: auto;
+    margin-top: 4px;
+    padding: 0;
+    background: transparent;
+}
+
+.mc-focus-badges,
+.mc-focus-genres {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.mc-focus-genres {
+    margin-top: 4px;
+}
+
+.mc-chip {
+    border-radius: 999px;
+    padding: 2px 6px;
+    font-size: .55rem;
+    font-weight: 700;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+    background: rgba(255, 255, 255, .18);
+    color: #fff;
+}
+
+.mc-chip--type-movie {
+    background: linear-gradient(135deg, rgba(229, 9, 20, .9), rgba(255, 95, 31, .9));
+}
+
+.mc-chip--type-series {
+    background: linear-gradient(135deg, rgba(37, 99, 235, .9), rgba(59, 130, 246, .9));
+}
+
+.mc-chip--type-live {
+    background: linear-gradient(135deg, rgba(0, 166, 124, .95), rgba(4, 207, 156, .95));
+}
+
+.mc-chip--rating {
+    background: rgba(255, 196, 0, .24);
+    color: #ffdf6d;
+}
+
+.mc-chip--language {
+    background: rgba(108, 92, 231, .3);
+    color: #cfc8ff;
+}
+
+.mc-chip--runtime {
+    background: rgba(46, 204, 113, .24);
+    color: #baf5d4;
+}
+
+.mc-chip--year {
+    background: rgba(255, 255, 255, .2);
+}
+
+.mc-chip--genre {
+    background: rgba(255, 255, 255, .12);
+}
+
+.mc-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: rgba(255, 255, 255, .2);
+}
+
+.mc-progress-fill {
+    height: 100%;
+    background: #e50914;
+}
+
+.mc-card.is-focused {
+    transform: scale(1.075);
+    z-index: 4;
+    filter: saturate(1.08);
+}
+
+.mc-card.is-focused .mc-focus-meta {
+    opacity: 1;
+}
+
+.mc-card--live.is-focused {
+    transform: scale(1.08);
+}
+
+/* Watchlist override (App.css 4841–4847) */
+.watchlist-card-wrap .mc-card {
+    width: auto;
+}
+
+.watchlist-card-wrap .mc-media {
+    height: clamp(112px, 13vh, 136px);
+}
