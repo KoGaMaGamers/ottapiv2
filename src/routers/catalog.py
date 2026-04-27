@@ -48,7 +48,9 @@ router = APIRouter(prefix="/api/v1", tags=["catalog"])
 # ---------------------------------------------------------------------------
 
 DEFAULT_PER_PAGE = 50
-MAX_PER_PAGE = 100
+# Cap of 500 covers single-shot fetches like the parental adult-channel
+# discovery (legacy passed limit=2000) without enabling unbounded scans.
+MAX_PER_PAGE = 500
 
 
 def _paginate(query, page: int, per_page: int):

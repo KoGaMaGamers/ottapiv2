@@ -721,9 +721,12 @@ export default function Profile(): JSX.Element {
         return;
       }
 
+      // Backend caps per_page at 500. Single-shot fetch is enough for
+      // any realistic adult category; if a provider ever exceeds that
+      // we'd page through `has_next`, but no leaf hits 500 in practice.
       const results = await Promise.allSettled(
         adultLeaves.map((leaf) =>
-          listLive({ category_id: leaf.id, per_page: 2000 }),
+          listLive({ category_id: leaf.id, per_page: 500 }),
         ),
       );
       const seen = new Set<string>();
