@@ -62,6 +62,7 @@ import HeroCarousel, {
   type HeroItem,
 } from "../components/HeroCarousel";
 import Sidebar, { type SidebarItem } from "../components/Sidebar";
+import { openPlayer } from "../stores/player";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -666,8 +667,12 @@ export default function Live(): JSX.Element {
         } else if (e.key === "Enter") {
           const ch = focusedChannel();
           if (ch) {
-            // eslint-disable-next-line no-console
-            console.log("[Live] would play", ch.id, ch.name);
+            openPlayer({
+              kind: "live",
+              channel: ch,
+              channels: channels(),
+              index: channelIdx(),
+            });
           }
         }
         return;
@@ -703,8 +708,12 @@ export default function Live(): JSX.Element {
       } else if (e.key === "Enter") {
         const ch = channels()[channelIdx()];
         if (ch) {
-          // eslint-disable-next-line no-console
-          console.log("[Live] would play", ch.id, ch.name);
+          openPlayer({
+            kind: "live",
+            channel: ch,
+            channels: channels(),
+            index: channelIdx(),
+          });
         }
       } else if (back) {
         setZone("sidebar");
@@ -884,12 +893,12 @@ export default function Live(): JSX.Element {
                         onClick={() => {
                           setZone("list");
                           setChannelIdx(idx);
-                          // eslint-disable-next-line no-console
-                          console.log(
-                            "[Live] would play",
-                            row().channel.id,
-                            row().channel.name,
-                          );
+                          openPlayer({
+                            kind: "live",
+                            channel: row().channel,
+                            channels: channels(),
+                            index: idx,
+                          });
                         }}
                       >
                         <div class="lp-row-logo-col">

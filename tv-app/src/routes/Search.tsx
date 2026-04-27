@@ -47,6 +47,7 @@ import MovieMediaCard from "../components/MovieMediaCard";
 import SeriesMediaCard from "../components/SeriesMediaCard";
 import MovieDetailModal from "../components/MovieDetailModal";
 import { type CardItem } from "../components/cardItem";
+import { openPlayer } from "../stores/player";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -386,8 +387,7 @@ export default function Search(): JSX.Element {
     } else if (item.type === "series") {
       navigate(`/series/${item.raw.id}`);
     } else {
-      // live — until MediaPlayer + channel-pass-through ports, just nav.
-      navigate("/live");
+      openPlayer({ kind: "live", channel: item.raw as LiveStreamItem });
     }
   };
 
@@ -807,10 +807,7 @@ export default function Search(): JSX.Element {
           onPlay={() => {
             const m = selectedMovie();
             setSelectedMovie(null);
-            if (m) {
-              // eslint-disable-next-line no-console
-              console.log("[Search] would play movie", m.id, m.name);
-            }
+            if (m) openPlayer({ kind: "movie", movie: m });
           }}
         />
       </Show>

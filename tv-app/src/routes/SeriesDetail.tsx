@@ -36,6 +36,7 @@ import type { EpisodeOut, SeasonOut } from "../api/types";
 import { useNavigationScope } from "../lib/navigation";
 import { isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
 import { appShellZone, setAppShellZone } from "../stores/shell";
+import { openPlayer } from "../stores/player";
 
 type Zone = "actions" | "seasons" | "episodes";
 const ZONES: Zone[] = ["actions", "seasons", "episodes"];
@@ -178,11 +179,14 @@ export default function SeriesDetail() {
     // episodes
     const eps = episodes() ?? [];
     const ep = eps[episodeIdx()];
-    if (ep) {
-      // eslint-disable-next-line no-console
-      console.info(
-        "[series-detail] play would invoke /api/v1/play/episode/" + ep.id,
-      );
+    const s = series();
+    if (ep && s) {
+      openPlayer({
+        kind: "episode",
+        series: s,
+        episode: ep,
+        seasonEpisodes: eps,
+      });
     }
   }
 

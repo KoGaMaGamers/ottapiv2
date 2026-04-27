@@ -67,6 +67,7 @@ import {
   MOVIE_SORT_OPTIONS,
 } from "../lib/sortPrefs";
 import SortSelector from "../components/SortSelector";
+import { openPlayer } from "../stores/player";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -506,9 +507,8 @@ export default function Movies(): JSX.Element {
     return rights[0]?.idx ?? null;
   };
 
-  // ── Play handler (stub until MediaPlayer is ported) ──────────────────
   const moviePlayNow = (m: MovieListItem) => {
-    console.log("[Movies] play", m.id, m.name);
+    openPlayer({ kind: "movie", movie: m });
   };
 
   // ── Hero items ───────────────────────────────────────────────────────

@@ -44,6 +44,7 @@ import HeroCarousel, {
 import MovieMediaCard from "../components/MovieMediaCard";
 import SeriesMediaCard from "../components/SeriesMediaCard";
 import { type CardItem } from "../components/cardItem";
+import { openPlayer } from "../stores/player";
 
 // ---------------------------------------------------------------------------
 // Adapters: typed list items → UI shapes
@@ -258,23 +259,18 @@ export default function Home(): JSX.Element {
   const loadError = () =>
     latestMovies.error || topMovies.error || latestSeries.error;
 
-  // Toast for play errors (no MediaPlayer wired yet).
-  const showPlayError = (msg: string) => {
-    setPlayError(msg);
-    const t = window.setTimeout(() => setPlayError(null), 6000);
-    onCleanup(() => clearTimeout(t));
-  };
-
   const resolveAndPlay = (
     kind: "movie" | "series",
     item: MovieListItem | SeriesListItem,
   ) => {
-    const label = item.name || "this item";
-    showPlayError(
-      kind === "series"
-        ? `Series detail not yet wired — open ${label} via /series/${item.id}.`
-        : `Player not yet wired — would play "${label}" (id ${item.id}).`,
-    );
+    if (kind === "movie") {
+      openPlayer({ kind: "movie", movie: item as MovieListItem });
+    } else {
+      // Series → open the dedicated detail page where the user picks
+      // an episode (auto-play first episode would skip the season tabs
+      // the legacy SeriesDetail relies on for resume).
+      navigate(`/series/${item.id}`);
+    }
   };
 
   const goMore = (kind: "movie" | "series") => {
