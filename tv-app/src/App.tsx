@@ -4,41 +4,40 @@ import { authToken } from "./stores/auth";
 import { bootstrap } from "./api/auth";
 import AppShell from "./components/AppShell";
 import Login from "./routes/Login";
-import Home from "./routes/Home";
-import MoviesPage from "./routes/Movies";
-import MovieDetail from "./routes/MovieDetail";
-import SeriesPage from "./routes/Series";
-import SeriesDetail from "./routes/SeriesDetail";
 
 /**
  * Top-level router shell.
  *
- * On mount we run `bootstrap()` which, if a cached token exists, hits
- * /api/v1/me to verify it. A 401 there clears the auth signal so any
- * /home route re-renders into a redirect-to-login. Other errors leave
- * the cached token alone.
+ * Authed routes live under AppShell (TopNav + auth gate). Right now most
+ * page components are stubs while we port them faithfully from
+ * `/var/www/ottapi/tv_app_v2/src/pages/*`. Each one lands in its own
+ * commit:
  *
- * AppShell layout (TopNav + content) wraps every authed route. The
- * /login route is intentionally OUTSIDE the shell — no nav while
- * unauthenticated.
+ *   /home         HomePage.jsx   →  routes/Home.tsx
+ *   /movies       MoviesPage.jsx →  routes/Movies.tsx (with detail modal)
+ *   /series       SeriesPage.jsx →  routes/Series.tsx (detail = dedicated page)
+ *   /series/:id   (new)         →  routes/SeriesDetail.tsx
+ *   /live         LivePage.jsx   →  routes/Live.tsx
+ *   /search       SearchPage.jsx →  routes/Search.tsx
+ *   /profile      ProfilePage.jsx →  routes/Profile.tsx
  */
 
 function RootRedirect() {
   return <Navigate href={authToken() ? "/home" : "/login"} />;
 }
 
-/** Placeholder for routes whose real components land in later steps. */
-function StubScreen(props: { title: string; nextStep: number }) {
+function PortPending(props: { source: string }) {
   return (
     <div class="min-h-[60vh] flex items-center justify-center text-zinc-500 px-6">
       <div class="text-center">
-        <h1 class="text-2xl font-semibold mb-2 text-zinc-300">{props.title}</h1>
-        <p class="text-sm">Lands in step {props.nextStep}.</p>
+        <p class="text-zinc-300 text-sm">Port pending</p>
+        <p class="text-zinc-600 text-xs mt-1">
+          Legacy source: <code>{props.source}</code>
+        </p>
       </div>
     </div>
   );
 }
-
 
 export default function App() {
   const [ready, setReady] = createSignal(false);
@@ -61,16 +60,35 @@ export default function App() {
         <Route path="/" component={RootRedirect} />
         <Route path="/login" component={Login} />
 
-        {/* All authed routes share the AppShell (TopNav + page outlet). */}
         <Route path="/" component={AppShell}>
-          <Route path="/home" component={Home} />
-          <Route path="/movies" component={MoviesPage} />
-          <Route path="/movies/:id" component={MovieDetail} />
-          <Route path="/series" component={SeriesPage} />
-          <Route path="/series/:id" component={SeriesDetail} />
-          <Route path="/live" component={() => <StubScreen title="Live TV" nextStep={13} />} />
-          <Route path="/search" component={() => <StubScreen title="Search" nextStep={9} />} />
-          <Route path="/profile" component={() => <StubScreen title="Profile" nextStep={10} />} />
+          <Route
+            path="/home"
+            component={() => <PortPending source="HomePage.jsx" />}
+          />
+          <Route
+            path="/movies"
+            component={() => <PortPending source="MoviesPage.jsx" />}
+          />
+          <Route
+            path="/series"
+            component={() => <PortPending source="SeriesPage.jsx" />}
+          />
+          <Route
+            path="/series/:id"
+            component={() => <PortPending source="SeriesPage.jsx (detail)" />}
+          />
+          <Route
+            path="/live"
+            component={() => <PortPending source="LivePage.jsx" />}
+          />
+          <Route
+            path="/search"
+            component={() => <PortPending source="SearchPage.jsx" />}
+          />
+          <Route
+            path="/profile"
+            component={() => <PortPending source="ProfilePage.jsx" />}
+          />
         </Route>
       </Router>
     </Show>
