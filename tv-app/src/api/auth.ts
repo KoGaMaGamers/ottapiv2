@@ -1,5 +1,6 @@
-import { api } from "./client";
-import { setAuth, type AuthUser } from "../stores/auth";
+import { api, ApiError } from "./client";
+import { authToken, clearAuth, setAuth, type AuthUser } from "../stores/auth";
+import { getMe } from "./me";
 
 interface LoginResponse {
   token: string;
@@ -40,4 +41,40 @@ export async function login(req: LoginRequest): Promise<LoginResponse> {
   };
   setAuth(resp.token, user);
   return resp;
+}
+
+/**
+ * On app start, if a token survives in localStorage, verify it by hitting
+ * /api/v1/me. If the server returns 401 the token is stale (expired or
+ * revoked) — clear local auth so the router can route to /login. On any
+ * other error (network), keep the cached token; the user can still browse
+ * cached pages and we'll retry on next request.
+ *
+ * Resolves to the live MeResponse on success, or null when no auth.
+ */
+export async function bootstrap(): Promise<AuthUser | null> {
+  if (!authToken()) return null;
+  try {
+    const me = await getMe();
+    const user: AuthUser = {
+      user_id: me.user_id,
+      username: me.username,
+      provider_id: me.provider_id,
+      view_mode: me.view_mode,
+      is_populated: me.is_populated,
+    };
+    setAuth(authToken()!, user);
+    return user;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      clearAuth();
+      return null;
+    }
+    // Network error etc. — keep the cached token; assume best.
+    return null;
+  }
+}
+
+export function logout(): void {
+  clearAuth();
 }
