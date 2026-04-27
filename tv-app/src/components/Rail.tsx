@@ -1,4 +1,4 @@
-import { For, JSX, Show } from "solid-js";
+import { For, type JSX, Show } from "solid-js";
 
 /**
  * Horizontal scrolling rail. Pure presentational — it does NOT manage

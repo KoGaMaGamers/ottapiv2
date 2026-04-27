@@ -1,4 +1,4 @@
-import { createEffect, JSX } from "solid-js";
+import { createEffect, type JSX } from "solid-js";
 
 /**
  * Single tile in a rail or grid. Pure presentational — the parent owns

@@ -1,4 +1,4 @@
-import { createEffect, For, JSX, Show } from "solid-js";
+import { createEffect, For, type JSX, Show } from "solid-js";
 
 export interface SidebarItem {
   id: string | number;

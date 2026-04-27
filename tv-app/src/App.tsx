@@ -1,8 +1,9 @@
 import { onMount, Show, createSignal } from "solid-js";
-import { Router, Route, Navigate } from "@solidjs/router";
-import { authToken, authUser } from "./stores/auth";
-import { bootstrap, logout } from "./api/auth";
+import { Router, Route, Navigate, useParams } from "@solidjs/router";
+import { authToken } from "./stores/auth";
+import { bootstrap } from "./api/auth";
 import Login from "./routes/Login";
+import Home from "./routes/Home";
 
 /**
  * Top-level router shell.
@@ -17,41 +18,33 @@ import Login from "./routes/Login";
  * roundtrips end-to-end.
  */
 
-function HomePlaceholder() {
-  const user = authUser();
+function ProtectedHome() {
+  if (!authToken()) return <Navigate href="/login" />;
+  return <Home />;
+}
+
+/** Placeholder detail route; replaced in step 7 (Movies) and step 8 (Series). */
+function DetailPlaceholder(props: { kind: "movie" | "series" }) {
+  const params = useParams<{ id: string }>();
+  if (!authToken()) return <Navigate href="/login" />;
   return (
     <div class="min-h-screen flex items-center justify-center text-zinc-300 px-6">
       <div class="text-center max-w-lg">
-        <h1 class="text-3xl font-semibold mb-2">Signed in.</h1>
-        <Show when={user}>
-          {(u) => (
-            <p class="text-zinc-400 mb-6">
-              {u().username} · provider {u().provider_id} · view mode{" "}
-              <span class="text-violet-400">{u().view_mode}</span>
-            </p>
-          )}
-        </Show>
+        <h1 class="text-2xl font-semibold mb-2">
+          {props.kind} #{params.id}
+        </h1>
         <p class="text-zinc-500 text-sm mb-6">
-          Real Home, Movies, Series, Live, Search and Player screens land in
-          steps 5–14 of the rewrite plan.
+          Detail page lands in step {props.kind === "movie" ? "7" : "8"}.
         </p>
         <button
           class="rounded-md bg-zinc-800 hover:bg-zinc-700 px-4 py-2 ring-1 ring-zinc-700 outline-none focus:ring-violet-400"
-          onClick={() => {
-            logout();
-            location.assign("/login");
-          }}
+          onClick={() => history.back()}
         >
-          Sign out
+          Back
         </button>
       </div>
     </div>
   );
-}
-
-function ProtectedHome() {
-  if (!authToken()) return <Navigate href="/login" />;
-  return <HomePlaceholder />;
 }
 
 function RootRedirect() {
@@ -79,6 +72,8 @@ export default function App() {
         <Route path="/" component={RootRedirect} />
         <Route path="/login" component={Login} />
         <Route path="/home" component={ProtectedHome} />
+        <Route path="/movies/:id" component={() => <DetailPlaceholder kind="movie" />} />
+        <Route path="/series/:id" component={() => <DetailPlaceholder kind="series" />} />
       </Router>
     </Show>
   );

@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, JSX, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, For, type JSX, onCleanup, Show } from "solid-js";
 
 /**
  * Auto-advancing hero banner at the top of content pages.
