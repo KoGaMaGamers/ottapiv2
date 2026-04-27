@@ -52,6 +52,10 @@ export interface GenreOut {
   name: string;
 }
 
+export interface GenreCountOut extends GenreOut {
+  count: number;
+}
+
 export interface LiveCategoryNode {
   id: number;
   name: string;

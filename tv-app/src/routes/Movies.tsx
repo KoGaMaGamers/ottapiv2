@@ -9,8 +9,8 @@ import {
 } from "solid-js";
 import { useNavigate, useSearchParams } from "@solidjs/router";
 import {
-  listGenres,
   listMovieCategories,
+  listMovieGenres,
   listMovies,
 } from "../api/catalog";
 import type { MovieListItem, MovieSort } from "../api/types";
@@ -71,7 +71,7 @@ export default function MoviesPage() {
 
   const [genres] = createResource(
     () => isCurated(),
-    (curated) => (curated ? listGenres() : Promise.resolve([])),
+    (curated) => (curated ? listMovieGenres() : Promise.resolve([])),
   );
   const [categories] = createResource(
     () => !isCurated(),
@@ -129,7 +129,7 @@ export default function MoviesPage() {
       const gs = genres() ?? [];
       return [
         { id: "__all__", label: "All movies" },
-        ...gs.map((g) => ({ id: g.id, label: g.name })),
+        ...gs.map((g) => ({ id: g.id, label: g.name, count: g.count })),
       ];
     }
     const cats = categories() ?? [];

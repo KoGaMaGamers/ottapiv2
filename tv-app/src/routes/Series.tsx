@@ -9,9 +9,9 @@ import {
 } from "solid-js";
 import { useNavigate, useSearchParams } from "@solidjs/router";
 import {
-  listGenres,
   listSerieCategories,
   listSeries,
+  listSeriesGenres,
 } from "../api/catalog";
 import type { SeriesListItem, SeriesSort } from "../api/types";
 import HeroCarousel, { type HeroItem } from "../components/HeroCarousel";
@@ -52,7 +52,7 @@ export default function SeriesPage() {
 
   const [genres] = createResource(
     () => isCurated(),
-    (curated) => (curated ? listGenres() : Promise.resolve([])),
+    (curated) => (curated ? listSeriesGenres() : Promise.resolve([])),
   );
   const [categories] = createResource(
     () => !isCurated(),
@@ -103,7 +103,7 @@ export default function SeriesPage() {
       const gs = genres() ?? [];
       return [
         { id: "__all__", label: "All series" },
-        ...gs.map((g) => ({ id: g.id, label: g.name })),
+        ...gs.map((g) => ({ id: g.id, label: g.name, count: g.count })),
       ];
     }
     const cats = categories() ?? [];

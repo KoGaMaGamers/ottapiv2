@@ -20,7 +20,7 @@ from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
@@ -284,6 +284,77 @@ _SERIES_SORT = {
 @router.get("/genres", response_model=List[GenreOut])
 def list_genres(db: Session = Depends(get_db)):
     return db.query(TMDBGenre).order_by(TMDBGenre.name).all()
+
+
+class GenreCountOut(BaseModel):
+    id: int
+    tmdb_genre_id: Optional[int]
+    name: str
+    count: int
+
+
+def _genre_counts_for(
+    db: Session,
+    provider_id: int,
+    *,
+    kind: str,
+) -> List[GenreCountOut]:
+    """Return the TMDB genres that have ≥1 stream of the given kind on the
+    user's provider. Ordered by name; zero-count genres dropped via HAVING."""
+    if kind == "movies":
+        junction = movie_stream_genre_association
+        stream_table = MovieStream
+        stream_fk_col = junction.c.movie_stream_id
+    else:
+        junction = series_stream_genre_association
+        stream_table = SeriesStream
+        stream_fk_col = junction.c.series_stream_id
+
+    rows = (
+        db.query(
+            TMDBGenre.id,
+            TMDBGenre.tmdb_genre_id,
+            TMDBGenre.name,
+            func.count(stream_table.id).label("count"),
+        )
+        .outerjoin(junction, junction.c.genre_id == TMDBGenre.id)
+        .outerjoin(
+            stream_table,
+            and_(
+                stream_table.id == stream_fk_col,
+                stream_table.provider_id == provider_id,
+            ),
+        )
+        .group_by(TMDBGenre.id)
+        .having(func.count(stream_table.id) > 0)
+        .order_by(TMDBGenre.name)
+        .all()
+    )
+    return [
+        GenreCountOut(
+            id=r.id,
+            tmdb_genre_id=r.tmdb_genre_id,
+            name=r.name,
+            count=int(r.count or 0),
+        )
+        for r in rows
+    ]
+
+
+@router.get("/genres/movies", response_model=List[GenreCountOut])
+def list_movie_genres(
+    user: IPTVUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return _genre_counts_for(db, user.provider_id, kind="movies")
+
+
+@router.get("/genres/series", response_model=List[GenreCountOut])
+def list_series_genres(
+    user: IPTVUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return _genre_counts_for(db, user.provider_id, kind="series")
 
 
 # ---------------------------------------------------------------------------

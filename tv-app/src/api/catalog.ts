@@ -2,6 +2,7 @@ import { api } from "./client";
 import type {
   EpisodeOut,
   FlatCategory,
+  GenreCountOut,
   GenreOut,
   LiveCategoryNode,
   LiveStreamItem,
@@ -21,6 +22,20 @@ import type {
 
 export function listGenres(): Promise<GenreOut[]> {
   return api.get<GenreOut[]>("/api/v1/genres");
+}
+
+/**
+ * Per-provider, per-type genre list with item counts. Genres with zero
+ * matching streams on the current user's provider are filtered out by
+ * the backend, so the response only contains genres the user can
+ * actually browse.
+ */
+export function listMovieGenres(): Promise<GenreCountOut[]> {
+  return api.get<GenreCountOut[]>("/api/v1/genres/movies");
+}
+
+export function listSeriesGenres(): Promise<GenreCountOut[]> {
+  return api.get<GenreCountOut[]>("/api/v1/genres/series");
 }
 
 // ---------------------------------------------------------------------------
