@@ -1,5 +1,5 @@
 import { onMount, Show, createSignal } from "solid-js";
-import { Router, Route, Navigate, useParams } from "@solidjs/router";
+import { Router, Route, Navigate } from "@solidjs/router";
 import { authToken } from "./stores/auth";
 import { bootstrap } from "./api/auth";
 import AppShell from "./components/AppShell";
@@ -7,6 +7,8 @@ import Login from "./routes/Login";
 import Home from "./routes/Home";
 import MoviesPage from "./routes/Movies";
 import MovieDetail from "./routes/MovieDetail";
+import SeriesPage from "./routes/Series";
+import SeriesDetail from "./routes/SeriesDetail";
 
 /**
  * Top-level router shell.
@@ -37,10 +39,6 @@ function StubScreen(props: { title: string; nextStep: number }) {
   );
 }
 
-function SeriesDetailStub() {
-  const params = useParams<{ id: string }>();
-  return <StubScreen title={`Series #${params.id}`} nextStep={8} />;
-}
 
 export default function App() {
   const [ready, setReady] = createSignal(false);
@@ -68,8 +66,8 @@ export default function App() {
           <Route path="/home" component={Home} />
           <Route path="/movies" component={MoviesPage} />
           <Route path="/movies/:id" component={MovieDetail} />
-          <Route path="/series" component={() => <StubScreen title="Series" nextStep={8} />} />
-          <Route path="/series/:id" component={SeriesDetailStub} />
+          <Route path="/series" component={SeriesPage} />
+          <Route path="/series/:id" component={SeriesDetail} />
           <Route path="/live" component={() => <StubScreen title="Live TV" nextStep={13} />} />
           <Route path="/search" component={() => <StubScreen title="Search" nextStep={9} />} />
           <Route path="/profile" component={() => <StubScreen title="Profile" nextStep={10} />} />
