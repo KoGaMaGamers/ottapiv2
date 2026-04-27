@@ -9,6 +9,7 @@ import Profile from "./routes/Profile";
 import Movies from "./routes/Movies";
 import Series from "./routes/Series";
 import SeriesDetail from "./routes/SeriesDetail";
+import Live from "./routes/Live";
 
 /**
  * Top-level router shell.
@@ -70,10 +71,7 @@ export default function App() {
           <Route path="/movies" component={Movies} />
           <Route path="/series" component={Series} />
           <Route path="/series/:id" component={SeriesDetail} />
-          <Route
-            path="/live"
-            component={() => <PortPending source="LivePage.jsx" />}
-          />
+          <Route path="/live" component={Live} />
           <Route
             path="/search"
             component={() => <PortPending source="SearchPage.jsx" />}

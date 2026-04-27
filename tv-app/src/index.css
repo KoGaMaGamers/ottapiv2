@@ -4,6 +4,7 @@
 @import "./styles/home.css";
 @import "./styles/profile.css";
 @import "./styles/movies.css";
+@import "./styles/live.css";
 
 /* TV-app baseline:
  *   - Dark, Netflix-style background — no flash on transitions

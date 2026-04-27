@@ -71,7 +71,7 @@ export interface FlatCategory {
 }
 
 // ---------------------------------------------------------------------------
-// Live streams
+// Live streams + EPG
 // ---------------------------------------------------------------------------
 
 export interface LiveStreamItem {
@@ -85,6 +85,32 @@ export interface LiveStreamItem {
   live_category_id: number | null;
   tv_archive: boolean;
   added: string | null;
+}
+
+/**
+ * Single short-EPG entry as returned by the provider's get_short_epg
+ * endpoint, surfaced through our `/api/v1/live/{id}/epg` proxy.
+ *
+ * `title` and `description` are base64-encoded by the provider — the
+ * client decodes on render. Timestamps are unix seconds.
+ */
+export interface EpgListing {
+  id?: number;
+  epg_id?: number;
+  title: string;
+  description?: string;
+  lang?: string;
+  channel_id?: string;
+  start?: string;
+  end?: string;
+  stop?: string;
+  start_timestamp?: number;
+  stop_timestamp?: number;
+}
+
+export interface EpgResponse {
+  epg_listings: EpgListing[];
+  cached: boolean;
 }
 
 // ---------------------------------------------------------------------------

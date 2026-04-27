@@ -15,8 +15,10 @@ Endpoint summary:
   GET /api/v1/search                       ?q=&type=&page=&per_page=
 """
 
+import threading
+import time
 from datetime import date, datetime
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -38,6 +40,7 @@ from ..models import (
     movie_stream_genre_association,
     series_stream_genre_association,
 )
+from ..services.xtream_client import XtreamClient
 from .auth import get_current_user
 
 router = APIRouter(prefix="/api/v1", tags=["catalog"])
@@ -478,6 +481,99 @@ def list_live_streams(
     q = q.order_by(LiveStream.xtream_live_id.asc(), LiveStream.id.asc())
     items, total = _paginate(q, page, per_page)
     return _page([_live_to_item(x) for x in items], total, page, per_page)
+
+
+# ---------------------------------------------------------------------------
+# Live EPG passthrough
+# ---------------------------------------------------------------------------
+#
+# Frontend asks for short EPG per channel (4 entries) when a row gains focus
+# and pre-fetches the prev/current/next neighbours. Rather than syncing EPG
+# into our DB on a schedule, we proxy the provider's get_short_epg call on
+# the fly using the user's own Xtream creds.
+#
+# To keep adjacent hovers from hammering the provider, we keep a small
+# in-process TTL cache keyed by (provider_id, stream_id, limit). Bounded so
+# the dict can't grow without bound.
+
+_EPG_CACHE_TTL_SEC = 300  # 5 minutes — short enough that "now playing"
+                          # stays accurate-ish but long enough to absorb
+                          # rapid focus changes
+_EPG_CACHE_MAX_ENTRIES = 4096
+
+# Keyed by (user_id, stream_id, limit). User-scoped because provider
+# responses depend on per-account state (expired accounts return
+# user_info instead of EPG, etc.) — sharing a cache across users would
+# leak one user's degraded response to others.
+_epg_cache: Dict[Tuple[int, int, int], Tuple[float, List[Dict[str, Any]]]] = {}
+_epg_cache_lock = threading.Lock()
+
+
+def _epg_cache_get(key: Tuple[int, int, int]) -> Optional[List[Dict[str, Any]]]:
+    now = time.time()
+    with _epg_cache_lock:
+        entry = _epg_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, payload = entry
+        if expires_at <= now:
+            _epg_cache.pop(key, None)
+            return None
+        return payload
+
+
+def _epg_cache_put(key: Tuple[int, int, int], listings: List[Dict[str, Any]]) -> None:
+    # Skip caching empty results: a blank response usually signals a
+    # transient provider failure (expired account, rate-limit, network
+    # blip) — not a stable "this channel truly has no EPG". Re-fetching
+    # next time is cheap and avoids sticky bad state.
+    if not listings:
+        return
+    expires_at = time.time() + _EPG_CACHE_TTL_SEC
+    with _epg_cache_lock:
+        if len(_epg_cache) >= _EPG_CACHE_MAX_ENTRIES:
+            # Evict the oldest by expiry; cheapest correct policy without
+            # pulling in a real LRU.
+            oldest = min(_epg_cache.items(), key=lambda kv: kv[1][0], default=None)
+            if oldest is not None:
+                _epg_cache.pop(oldest[0], None)
+        _epg_cache[key] = (expires_at, listings)
+
+
+@router.get("/live/{live_id}/epg")
+def get_live_epg(
+    live_id: int,
+    limit: int = Query(4, ge=1, le=20),
+    user: IPTVUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Short EPG for a live channel. Pass-through to the provider's
+    get_short_epg endpoint with a 5-minute in-process cache so the
+    frontend can pre-fetch neighbours without rate-limiting the
+    provider.
+    """
+    live = db.get(LiveStream, live_id)
+    if live is None or live.provider_id != user.provider_id:
+        raise HTTPException(status_code=404, detail="live stream not found")
+
+    cache_key = (user.id, live.stream_id, limit)
+    cached = _epg_cache_get(cache_key)
+    if cached is not None:
+        return {"epg_listings": cached, "cached": True}
+
+    client = XtreamClient(user.base_url, user.username, user.password)
+    payload = client.get_short_epg(stream_id=live.stream_id, limit=limit)
+    listings: List[Dict[str, Any]] = []
+    if isinstance(payload, dict):
+        raw = payload.get("epg_listings")
+        if isinstance(raw, list):
+            listings = raw[:limit]
+    elif isinstance(payload, list):
+        listings = payload[:limit]
+
+    _epg_cache_put(cache_key, listings)
+    return {"epg_listings": listings, "cached": False}
 
 
 @router.get("/movies")
