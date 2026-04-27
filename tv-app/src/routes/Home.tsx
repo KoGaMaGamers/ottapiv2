@@ -1,4 +1,4 @@
-import { createMemo, createResource, createSignal, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import HeroCarousel, { type HeroItem } from "../components/HeroCarousel";
 import PosterCard from "../components/PosterCard";
@@ -7,6 +7,7 @@ import { listMovies, listSeries } from "../api/catalog";
 import type { MovieListItem, SeriesListItem } from "../api/types";
 import { useNavigationScope } from "../lib/navigation";
 import { isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
+import { appShellZone, setAppShellZone } from "../stores/shell";
 
 /**
  * Home — first screen after login.
@@ -70,7 +71,11 @@ export default function Home() {
   const [moviesIdx, setMoviesIdx] = createSignal(0);
   const [seriesIdx, setSeriesIdx] = createSignal(0);
 
-  const { isScopeOwner } = useNavigationScope("home", { priority: 0 });
+  const { isScopeOwner, setActive } = useNavigationScope("home", {
+    priority: 0,
+    active: appShellZone() === "content",
+  });
+  createEffect(() => setActive(appShellZone() === "content"));
 
   // -------------------------------------------------------------------------
   // Derived hero items (top popular movies)
@@ -107,7 +112,13 @@ export default function Home() {
   function moveZone(delta: 1 | -1) {
     const cur = zone();
     const idx = ZONES.indexOf(cur);
-    const next = Math.min(Math.max(idx + delta, 0), ZONES.length - 1);
+    const next = idx + delta;
+    if (next < 0) {
+      // Escape upward into the TopNav
+      setAppShellZone("nav");
+      return;
+    }
+    if (next >= ZONES.length) return; // clamp at bottom
     setZone(ZONES[next]);
   }
 
