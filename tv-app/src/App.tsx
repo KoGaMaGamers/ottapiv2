@@ -5,6 +5,7 @@ import { bootstrap } from "./api/auth";
 import AppShell from "./components/AppShell";
 import Login from "./routes/Login";
 import Home from "./routes/Home";
+import Profile from "./routes/Profile";
 
 /**
  * Top-level router shell.
@@ -83,10 +84,7 @@ export default function App() {
             path="/search"
             component={() => <PortPending source="SearchPage.jsx" />}
           />
-          <Route
-            path="/profile"
-            component={() => <PortPending source="ProfilePage.jsx" />}
-          />
+          <Route path="/profile" component={Profile} />
         </Route>
       </Router>
     </Show>

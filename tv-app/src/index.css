@@ -2,6 +2,7 @@
 @import "./styles/hero.css";
 @import "./styles/cards.css";
 @import "./styles/home.css";
+@import "./styles/profile.css";
 
 /* TV-app baseline:
  *   - Dark, Netflix-style background — no flash on transitions
