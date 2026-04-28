@@ -528,16 +528,22 @@ export default function MediaPlayer(): JSX.Element {
   });
 
   // ── Progress emission ───────────────────────────────────────────────
-  // Save the current position every 10s while playing. Final save with
-  // markCompleted: true on close — auto-removes the entry from the
-  // store when at-or-near the end (>=90% / <120s remaining).
+  // Save the current position every 10s while playing. The store has
+  // its own "completed" detection (>=90% watched OR within 120s of the
+  // end) that auto-purges. The `final` flag here only adds an extra
+  // signal when the user closes near the end (>=98%) — a manual close
+  // mid-movie must NOT purge the entry, otherwise the user can't
+  // resume.
   const saveProgress = (final = false) => {
     const item = playbackItemFor(cur());
     if (!item || !videoRef) return;
+    const pos = videoRef.currentTime || 0;
+    const dur = videoRef.duration || duration() || 0;
+    const completed = final && dur > 0 && pos >= dur * 0.98;
     savePlaybackProgress(item, {
-      positionSec: videoRef.currentTime || 0,
-      durationSec: videoRef.duration || duration() || 0,
-      markCompleted: final,
+      positionSec: pos,
+      durationSec: dur,
+      markCompleted: completed,
     });
   };
   createEffect(() => {
