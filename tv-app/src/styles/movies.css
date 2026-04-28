@@ -244,10 +244,13 @@
     padding-top: 30px;
 }
 /* Series grid likewise tucks under the fade so cards begin scrolling
-   inside the gradient zone and dissolve into it. */
+   inside the gradient zone and dissolve into it. Portrait posters
+   visually crowded the sort bar at padding-top: 30px (cards started
+   only ~12px below the panel top), so push them further down — the
+   first row now sits below the sort area entirely. */
 .series-page .sp-genre-grid {
     margin-top: -18px;
-    padding-top: 30px;
+    padding-top: 70px;
 }
 
 /* Movies-only modal sizing overrides */

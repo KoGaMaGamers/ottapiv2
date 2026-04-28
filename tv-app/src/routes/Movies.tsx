@@ -706,7 +706,7 @@ export default function Movies(): JSX.Element {
         <HeroCarousel
           className="sp-browser-hero mp-browser-hero"
           activeIndex={0}
-          animKey={0}
+          animKey={focusedGridMovie()?.id ?? 0}
           items={heroItems()}
           previewClip={heroPreviewClip()}
           previewEnabled={!selectedMovie() && !playerOpen()}

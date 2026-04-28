@@ -686,7 +686,7 @@ export default function Series(): JSX.Element {
         <HeroCarousel
           className="sp-browser-hero"
           activeIndex={0}
-          animKey={0}
+          animKey={focusedGridSeries()?.id ?? 0}
           items={heroItems()}
           previewClip={heroPreviewClip()}
           previewEnabled={selectedSeriesId() == null && !playerOpen()}
