@@ -94,20 +94,37 @@ export default function MovieDetailModal(
   const youtubeId = () => extractYoutubeId(detail()?.youtube_trailer);
 
   // Keyboard handler — scoped to this modal.
+  //
+  // The handler swallows ALL navigation keys (preventDefault +
+  // stopImmediatePropagation) so the underlying Movies / Search page
+  // handler — even if it survived the scope-owner check — can't act.
+  // This is defence in depth: scope-stack arbitration *should* keep
+  // the page from doing anything, but stopping the event here also
+  // stops things like default scroll, focus-cycle, or any third-party
+  // listener that might react to arrow keys.
   createEffect(() => {
+    const NAV = [
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      "Enter",
+      " ",
+      "Escape",
+      "Backspace",
+    ];
     const handler = (e: KeyboardEvent) => {
       if (!isScopeOwner()) return;
+      if (!NAV.includes(e.key)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
       if (e.key === "Escape" || e.key === "Backspace") {
-        e.preventDefault();
         props.onClose();
       } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
         setActionIdx((i) => Math.max(0, i - 1));
       } else if (e.key === "ArrowRight") {
-        e.preventDefault();
         setActionIdx((i) => Math.min(1, i + 1));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
+      } else if (e.key === "Enter" || e.key === " ") {
         if (actionIdx() === 0) props.onPlay();
         // Watchlist: no-op until store is ported.
       }

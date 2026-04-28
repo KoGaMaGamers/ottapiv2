@@ -746,7 +746,11 @@ export default function Movies(): JSX.Element {
                   {(m, i) => (
                     <MovieMediaCard
                       item={movieToCard(m)}
-                      focused={zone() === "grid" && gridIdx() === i()}
+                      focused={
+                        zone() === "grid" &&
+                        gridIdx() === i() &&
+                        !selectedMovie()
+                      }
                       onClick={() => setSelectedMovie(m)}
                     />
                   )}
