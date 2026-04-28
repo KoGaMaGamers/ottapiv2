@@ -61,6 +61,10 @@ import {
   savePlaybackProgress,
   type PlaybackItem,
 } from "../lib/playbackStore";
+import {
+  getPlaybackPreferences,
+  setClientPreferences,
+} from "../lib/clientPreferences";
 
 // Languages exposed in the CC menu. Backend fetches on demand
 // per-language, so showing the full set up-front is cheap (no upstream
@@ -475,6 +479,21 @@ export default function MediaPlayer(): JSX.Element {
     }
   };
 
+  // Persist the user's last subtitle/audio choice to the client prefs
+  // bag so the next playback (any title) auto-applies it. The legacy
+  // bag already had these fields; we just write on pick.
+  const savePreferredSubtitleLang = (lang: string | null) => {
+    setClientPreferences({
+      playback: {
+        subtitleMode: lang ? "preferred" : "off",
+        preferredSubtitleLang: lang,
+      },
+    });
+  };
+  const savePreferredAudioLang = (lang: string | null) => {
+    setClientPreferences({ playback: { preferredAudioLang: lang } });
+  };
+
   const selectSubtitle = async (lang: string | null) => {
     // Picking a SUBDL lang implies turning off any in-band HLS sub.
     if (hls && hls.subtitleTrack >= 0) {
@@ -483,6 +502,7 @@ export default function MediaPlayer(): JSX.Element {
     }
     if (lang == null) {
       setActiveSubId(null);
+      savePreferredSubtitleLang(null);
       return;
     }
     let st = subLangState()[lang];
@@ -492,6 +512,7 @@ export default function MediaPlayer(): JSX.Element {
     }
     if (st?.status === "loaded") {
       setActiveSubId(st.entry.id);
+      savePreferredSubtitleLang(lang);
     }
   };
 
@@ -501,13 +522,79 @@ export default function MediaPlayer(): JSX.Element {
     setActiveSubId(null);
     hls.subtitleTrack = id ?? -1;
     setActiveEmbeddedSubId(id);
+    if (id == null) {
+      savePreferredSubtitleLang(null);
+    } else {
+      const track = embeddedSubs().find((t) => t.id === id);
+      if (track?.lang) savePreferredSubtitleLang(track.lang);
+    }
   };
 
   const selectAudioTrack = (id: number) => {
     if (!hls) return;
     hls.audioTrack = id;
     setActiveAudioId(id);
+    const track = audioTracks().find((t) => t.id === id);
+    if (track?.lang) savePreferredAudioLang(track.lang);
   };
+
+  // ── Auto-apply remembered prefs when tracks become available ──────
+  // Runs once per player session. Reads the client prefs bag and:
+  //  - matches preferredAudioLang to a discovered HLS audio track
+  //  - if subtitleMode === "preferred", picks the matching in-band
+  //    subtitle if available, otherwise falls back to fetching SUBDL
+  //    in that language.
+  // Marked applied after the first attempt so a later track-update
+  // event doesn't overwrite a manual choice the user just made.
+  let prefsApplied = false;
+  createEffect(() => {
+    if (prefsApplied) return;
+    const audios = audioTracks();
+    const embedded = embeddedSubs();
+    const ctx = subContext();
+    // Wait until we have at least one of the surfaces — otherwise we
+    // run the effect too early and the "track unavailable" branch
+    // permanently skips the preference.
+    if (audios.length === 0 && embedded.length === 0 && !ctx) return;
+
+    const prefs = getPlaybackPreferences();
+    let didSomething = false;
+
+    if (
+      audios.length > 1 &&
+      prefs.preferredAudioLang &&
+      activeAudioId() == null
+    ) {
+      const match = audios.find(
+        (a) => a.lang.toLowerCase() === prefs.preferredAudioLang!.toLowerCase(),
+      );
+      if (match) {
+        selectAudioTrack(match.id);
+        didSomething = true;
+      }
+    }
+
+    if (
+      prefs.subtitleMode === "preferred" &&
+      prefs.preferredSubtitleLang &&
+      activeEmbeddedSubId() == null &&
+      activeSubId() == null
+    ) {
+      const lang = prefs.preferredSubtitleLang.toLowerCase();
+      const inband = embedded.find((s) => s.lang.toLowerCase() === lang);
+      if (inband) {
+        selectEmbeddedSub(inband.id);
+        didSomething = true;
+      } else if (ctx) {
+        // Fire-and-forget — fetchSubLang persists state in subLangState
+        // and selectSubtitle activates once loaded.
+        selectSubtitle(prefs.preferredSubtitleLang);
+        didSomething = true;
+      }
+    }
+
+    if (didSomething) prefsApplied = true;
+  });
 
   // Activate the matching textTrack on the <video> when the active
   // subtitle changes — Solid mounts the <track> reactively below, but
