@@ -40,6 +40,19 @@
     pointer-events: none;
 }
 
+/* Loading spinner shown while the preview clip buffers — sits inside
+ * .video-player-wrapper so it tracks the 80%-width right-anchored
+ * preview area instead of the full hero. */
+.hp-hero-preview-spinner {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+
 /* Left-to-right + bottom overlay (sits above gradient bg, below poster) */
 .hp-hero-overlay {
     position: absolute;

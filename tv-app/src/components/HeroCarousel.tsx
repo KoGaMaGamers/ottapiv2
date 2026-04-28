@@ -387,6 +387,10 @@ function PreviewVideo(props: {
 }): JSX.Element {
   let videoEl: HTMLVideoElement | undefined;
   let hls: Hls | null = null;
+  // Tracks whether the underlying <video> is actually producing frames.
+  // Drives the loading spinner overlay below — visible from mount until
+  // the first `playing` event, and re-shown if the stream stalls.
+  const [playing, setPlaying] = createSignal(false);
 
   onMount(() => {
     if (!videoEl) return;
@@ -461,7 +465,16 @@ function PreviewVideo(props: {
         class="hp-hero-preview-video"
         autoplay
         playsinline
+        onPlaying={() => setPlaying(true)}
+        onWaiting={() => setPlaying(false)}
+        onStalled={() => setPlaying(false)}
+        onEmptied={() => setPlaying(false)}
       />
+      <Show when={!playing()}>
+        <div class="hp-hero-preview-spinner">
+          <div class="hp-spinner" />
+        </div>
+      </Show>
     </div>
   );
 }
