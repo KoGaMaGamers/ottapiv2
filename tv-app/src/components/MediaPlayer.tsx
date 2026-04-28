@@ -54,6 +54,7 @@ import {
 } from "../stores/player";
 import { useNavigationScope } from "../lib/navigation";
 import { useHeartbeat } from "../lib/heartbeat";
+import { isBackKey, BACK_KEYS } from "../lib/navigationKeys";
 import { listSubtitles, subtitleVttUrl } from "../api/subtitles";
 import {
   getResumePositionSec,
@@ -649,14 +650,13 @@ export default function MediaPlayer(): JSX.Element {
         "ArrowRight",
         "Enter",
         " ",
-        "Escape",
-        "Backspace",
+        ...BACK_KEYS,
       ];
       if (!NAV.includes(e.key)) return;
       e.preventDefault();
       e.stopPropagation();
 
-      if (e.key === "Escape" || e.key === "Backspace") {
+      if (isBackKey(e.key)) {
         // If a submenu is open, dismiss it instead of closing the
         // whole player — same back-out semantics as any nested overlay.
         if (zone() === "subMenu") {

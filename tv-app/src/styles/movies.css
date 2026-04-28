@@ -569,6 +569,19 @@
 /* Same treatment on the horizontal episode rail. */
 .sp-series-detail-popup .overflow-x-auto { scrollbar-width: none; }
 .sp-series-detail-popup .overflow-x-auto::-webkit-scrollbar { display: none; }
+
+/* When SeriesDetail is mounted as a route (e.g. /series/:id from Home
+ * Continue Watching) instead of as the in-page popup, the body scrolls
+ * and shows the document scrollbar. Hide it via :has() so route-mode
+ * matches popup-mode visually. Also covers the inner episode rail. */
+.series-detail-shell { scrollbar-width: none; }
+.series-detail-shell::-webkit-scrollbar { display: none; }
+.series-detail-shell .overflow-x-auto { scrollbar-width: none; }
+.series-detail-shell .overflow-x-auto::-webkit-scrollbar { display: none; }
+body:has(.series-detail-shell) {
+    scrollbar-width: none;
+}
+body:has(.series-detail-shell)::-webkit-scrollbar { display: none; }
 @keyframes spDetailPopupIn {
     from { opacity: 0; transform: translateY(12px); }
     to   { opacity: 1; transform: translateY(0); }

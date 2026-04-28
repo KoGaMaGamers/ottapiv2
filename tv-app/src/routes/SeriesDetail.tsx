@@ -37,6 +37,7 @@ import { useNavigationScope } from "../lib/navigation";
 import { isBackKey, isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
 import { appShellZone, setAppShellZone } from "../stores/shell";
 import { openPlayer } from "../stores/player";
+import { getPlaybackProgress, playbackState } from "../lib/playbackStore";
 
 type Zone = "actions" | "seasons" | "episodes";
 const ZONES: Zone[] = ["actions", "seasons", "episodes"];
@@ -295,7 +296,7 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
       {(getter) => {
         const s = getter();
         return (
-          <div class="relative">
+          <div class="relative series-detail-shell">
             {/* Backdrop with gradient fade */}
             <div class="absolute inset-x-0 top-0 h-[55vh] -z-10 overflow-hidden">
               <Show when={s.backdrop_path}>
@@ -521,6 +522,45 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
                                 </Show>
                               </div>
                             </Show>
+                            {/* Resume-progress fill — thin red strip at
+                                the bottom of the thumbnail. The store
+                                only tracks one entry per series, so we
+                                only paint the strip on the matching
+                                season+episode. Reading playbackState()
+                                makes the strip update reactively when
+                                the player saves. */}
+                            {(() => {
+                              playbackState();
+                              const sid = series()?.id;
+                              if (sid == null) return null;
+                              const saved = getPlaybackProgress(
+                                `series:${sid}`,
+                              );
+                              if (
+                                !saved ||
+                                saved.season !== ep.season_number ||
+                                saved.episode !== ep.episode_num ||
+                                saved.durationSec <= 0
+                              )
+                                return null;
+                              const pct = Math.min(
+                                100,
+                                Math.max(
+                                  0,
+                                  Math.round(
+                                    (saved.positionSec / saved.durationSec) *
+                                      100,
+                                  ),
+                                ),
+                              );
+                              if (pct <= 0) return null;
+                              return (
+                                <div
+                                  class="absolute bottom-0 left-0 h-1 bg-red-600"
+                                  style={{ width: `${pct}%` }}
+                                />
+                              );
+                            })()}
                           </div>
                           <div class="p-2">
                             <p
