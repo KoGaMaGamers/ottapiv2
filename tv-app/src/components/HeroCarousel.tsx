@@ -132,8 +132,6 @@ export default function HeroCarousel(props: HeroCarouselProps): JSX.Element {
 
   const previewActive = () => showPreview() && !!activePreviewClip()?.url;
 
-  const prev = () => props.onNavigate?.((activeIndex() - 1 + total()) % total());
-  const next = () => props.onNavigate?.((activeIndex() + 1) % total());
 
   const hardStopPreview = () => {
     previewPlayer?.destroy?.();
@@ -345,15 +343,9 @@ export default function HeroCarousel(props: HeroCarouselProps): JSX.Element {
           }}
         </Show>
 
-        {/* Navigation UI (only when navigation is enabled) */}
+        {/* Navigation UI (dots only — arrows removed; D-pad ←/→ on the
+            hero handles paging, mouse users get the dots). */}
         <Show when={props.onNavigate && total() > 1}>
-          <button class="hp-hero-arrow left" onClick={prev}>
-            ‹
-          </button>
-          <button class="hp-hero-arrow right" onClick={next}>
-            ›
-          </button>
-
           <div class="hp-hero-dots">
             <For each={items()}>
               {(_, i) => (

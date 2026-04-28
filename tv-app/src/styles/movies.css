@@ -203,24 +203,49 @@
 }
 .movies-page .sp-genre-panel-title { font-size: 0.76rem; }
 .movies-page .sp-genre-panel-count { font-size: 0.5rem; }
-.movies-page .sp-genre-panel { position: relative; }
-.movies-page .sp-genre-panel::before {
+
+/* Sort + header float over the grid: cards scroll under a fading
+   gradient so the pills aren't crossed visually by cards passing
+   behind them. Applied to both Movies and Series — same panel layout
+   on each. The fade z-index is *above* a focused card's z-index (4)
+   so cards never pop through the gradient on focus. */
+.movies-page .sp-genre-panel,
+.series-page .sp-genre-panel {
+    position: relative;
+}
+.movies-page .sp-genre-panel::before,
+.series-page .sp-genre-panel::before {
     content: '';
     position: absolute;
     top: 0;
     left: 0;
     right: 0;
-    height: 44px;
+    /* Tall enough to cover panel header (~30px) + sort bar (~42px)
+       plus a fade tail. */
+    height: 110px;
     pointer-events: none;
-    z-index: 4;
+    z-index: 7;
     background: linear-gradient(
         to bottom,
-        rgba(0, 0, 0, 0.95) 0%,
-        rgba(0, 0, 0, 0.5) 42%,
-        rgba(0, 0, 0, 0) 100%
+        rgba(11, 11, 11, 1) 0%,
+        rgba(11, 11, 11, 0.95) 55%,
+        rgba(11, 11, 11, 0.6) 82%,
+        rgba(11, 11, 11, 0) 100%
     );
 }
+.movies-page .sp-genre-panel-hdr,
+.series-page .sp-genre-panel-hdr,
+.sp-sort-bar {
+    position: relative;
+    z-index: 8;
+}
 .movies-page .sp-genre-grid.sp-genre-grid--movies {
+    margin-top: -18px;
+    padding-top: 30px;
+}
+/* Series grid likewise tucks under the fade so cards begin scrolling
+   inside the gradient zone and dissolve into it. */
+.series-page .sp-genre-grid {
     margin-top: -18px;
     padding-top: 30px;
 }

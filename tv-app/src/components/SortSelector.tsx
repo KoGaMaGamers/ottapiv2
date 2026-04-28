@@ -24,7 +24,7 @@ export interface SortSelectorProps<T extends string> {
  */
 export default function SortSelector<T extends string>(props: SortSelectorProps<T>) {
   return (
-    <div class="px-8 py-3 flex items-center gap-2">
+    <div class="sp-sort-bar px-8 py-3 flex items-center gap-2">
       <span class="text-xs text-zinc-500 uppercase tracking-wider mr-1">
         Sort
       </span>
