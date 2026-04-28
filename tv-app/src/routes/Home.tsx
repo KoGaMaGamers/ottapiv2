@@ -37,6 +37,7 @@ import { useNavigationScope } from "../lib/navigation";
 import { setAppShellZone } from "../stores/shell";
 import { isBackKey, isSelectKey } from "../lib/navigationKeys";
 import { getGradient, getAccent } from "../lib/gradient";
+import { getContentPrefs } from "../lib/contentPrefs";
 import HeroCarousel, {
   type HeroItem,
   type HeroBadge,
@@ -226,6 +227,32 @@ interface HomeRow {
   raw: (MovieListItem | SeriesListItem)[];
 }
 
+/**
+ * Resolve the user's saved category preferences (set in Profile →
+ * Preferences) into the comma-separated string the backend's
+ * `category_id` query accepts.
+ *   null  → no restriction (don't pass category_id)
+ *   ""    → user explicitly deselected everything (caller bails)
+ *   "1,2,3" → filter to these categories
+ */
+function resolveCategoryIdsParam(
+  kind: "movies" | "series",
+): string | null | "" {
+  const pref = getContentPrefs()[kind];
+  if (pref === null) return null;
+  if (!Array.isArray(pref) || pref.length === 0) return "";
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const raw of pref) {
+    const t = String(raw ?? "").trim();
+    if (!/^\d+$/.test(t)) continue;
+    if (seen.has(t)) continue;
+    seen.add(t);
+    cleaned.push(t);
+  }
+  return cleaned.length ? cleaned.join(",") : "";
+}
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -234,21 +261,45 @@ export default function Home(): JSX.Element {
   const navigate = useNavigate();
   const { isScopeOwner } = useNavigationScope("page:home", { priority: 30 });
 
-  const [latestMovies] = createResource(() =>
-    listMovies({ sort: "added_desc", per_page: 20 })
+  // Snapshot prefs at mount: the home rails fetch once, so we apply
+  // whatever the user had saved last time they visited Profile. If
+  // they change prefs and bounce back to Home, the route remounts and
+  // re-fetches with the new categories.
+  const movieCat = resolveCategoryIdsParam("movies");
+  const seriesCat = resolveCategoryIdsParam("series");
+  const moviesEmpty = movieCat === "";
+  const seriesEmpty = seriesCat === "";
+
+  const [latestMovies] = createResource(() => {
+    if (moviesEmpty) return Promise.resolve([] as MovieListItem[]);
+    return listMovies({
+      sort: "added_desc",
+      per_page: 20,
+      category_id: movieCat ?? undefined,
+    })
       .then((p) => p.items)
-      .catch(() => [] as MovieListItem[]),
-  );
-  const [topMovies] = createResource(() =>
-    listMovies({ sort: "rating_desc", per_page: 20 })
+      .catch(() => [] as MovieListItem[]);
+  });
+  const [topMovies] = createResource(() => {
+    if (moviesEmpty) return Promise.resolve([] as MovieListItem[]);
+    return listMovies({
+      sort: "rating_desc",
+      per_page: 20,
+      category_id: movieCat ?? undefined,
+    })
       .then((p) => p.items)
-      .catch(() => [] as MovieListItem[]),
-  );
-  const [latestSeries] = createResource(() =>
-    listSeries({ sort: "last_modified_desc", per_page: 20 })
+      .catch(() => [] as MovieListItem[]);
+  });
+  const [latestSeries] = createResource(() => {
+    if (seriesEmpty) return Promise.resolve([] as SeriesListItem[]);
+    return listSeries({
+      sort: "last_modified_desc",
+      per_page: 20,
+      category_id: seriesCat ?? undefined,
+    })
       .then((p) => p.items)
-      .catch(() => [] as SeriesListItem[]),
-  );
+      .catch(() => [] as SeriesListItem[]);
+  });
 
   const [heroIndex, setHeroIndex] = createSignal(0);
   const [heroAnimKey, setHeroAnimKey] = createSignal(0);
