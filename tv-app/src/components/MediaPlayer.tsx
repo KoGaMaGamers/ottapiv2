@@ -645,16 +645,19 @@ export default function MediaPlayer(): JSX.Element {
   });
 
   // ── Close + release ─────────────────────────────────────────────────
-  const closeAndRelease = async () => {
+  // Close the UI synchronously and let the release request race in the
+  // background. Awaiting the release before closing made the back
+  // button feel broken: a slow network or unresponsive backend would
+  // hold the player open for tens of seconds. Releases are best-effort
+  // anyway — the slot has its own TTL on the server.
+  const closeAndRelease = () => {
     saveProgress(true);
     const a = alloc();
     if (!releasedRef && a) {
       releasedRef = true;
-      try {
-        await releaseAllocation(a.allocation_token);
-      } catch {
+      releaseAllocation(a.allocation_token).catch(() => {
         /* best-effort */
-      }
+      });
     }
     if (hideTimer != null) clearTimeout(hideTimer);
     closePlayer();
