@@ -3,6 +3,7 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .routers import (
     admin_providers,
@@ -36,6 +37,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="OTTAPI", version="0.1.0", lifespan=lifespan)
+
+# CORS — needed once the frontend stops relying on the Vite same-origin
+# proxy. In Tauri Android the WebView is served from `http://tauri.localhost`
+# and its `shouldInterceptRequest` interceptor mangles POST bodies on
+# proxied paths, so we make the frontend call the backend directly.
+# Browser dev keeps using the Vite proxy (no CORS needed there) but we
+# whitelist the dev origins anyway so local builds don't surprise us.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://tauri.localhost",   # Android Tauri WebView
+        "https://tauri.localhost",  # iOS / future-proof
+        "http://localhost:5173",    # browser dev (Vite default)
+        "http://localhost:1420",    # Tauri desktop default
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(admin_sync.router)
 app.include_router(admin_providers.router)

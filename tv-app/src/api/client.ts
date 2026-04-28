@@ -1,20 +1,41 @@
 /**
  * Backend HTTP client.
  *
- * Dev: VITE_API_BASE is unset → relative paths, Vite dev proxy forwards to
- *      https://ottapi.smartbunker.fr (see `vite.config.ts`).
- * Tauri APK build: VITE_API_BASE is set to the public hostname so requests
- *      go directly without a proxy.
+ * URL resolution (highest precedence first):
+ *   1. VITE_API_BASE env var — set in `.env.production`, picked up at
+ *      build time. This applies to bundled Tauri APK + any other
+ *      production deployment.
+ *   2. Tauri runtime detection — even in `tauri android dev` mode, the
+ *      WebView origin is `http://tauri.localhost/` and Tauri's
+ *      shouldInterceptRequest hook MANGLES POST request bodies when
+ *      forwarding through the Vite proxy. So when we detect a Tauri
+ *      context at runtime, we pin BASE to the public backend URL and
+ *      bypass the interceptor entirely (the backend has CORS for
+ *      `tauri.localhost`).
+ *   3. Otherwise → empty BASE → relative paths → browser dev uses the
+ *      Vite proxy in `vite.config.ts`.
  *
  * The bearer token is held in a Solid signal (see `stores/auth.ts`) and
  * attached automatically. Errors are normalised to the backend's
- * `{ detail: string }` shape; non-JSON responses surface as
- * `ApiError("HTTP <status>")`.
+ * `{ detail: string | array }` shape via `formatErrorDetail`.
  */
 
 import { authToken } from "../stores/auth";
 
-const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
+const TAURI_FALLBACK_BASE = "https://ottapi.smartbunker.fr";
+
+function isTauriContext(): boolean {
+  if (typeof window === "undefined") return false;
+  const w = window as unknown as {
+    __TAURI_INTERNALS__?: unknown;
+    isTauri?: unknown;
+  };
+  return Boolean(w.__TAURI_INTERNALS__) || w.isTauri === true;
+}
+
+const BASE =
+  (import.meta.env.VITE_API_BASE as string | undefined) ??
+  (isTauriContext() ? TAURI_FALLBACK_BASE : "");
 
 export class ApiError extends Error {
   status: number;
