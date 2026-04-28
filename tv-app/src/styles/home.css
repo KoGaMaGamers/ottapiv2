@@ -233,11 +233,15 @@
 .home-page .hp-row-track > .mc-card.mc-card--live {
     width: 84px;
 }
-/* Continue Watching row: keep mixed movie/series posters uniform by height. */
-.home-page .hp-row--continue .hp-row-track > .mc-card {
+/* Continue Watching / You-should-also-like rows: keep mixed movie /
+   series posters uniform by height (lets the card width auto-flex
+   from each poster's natural aspect ratio). */
+.home-page .hp-row--continue .hp-row-track > .mc-card,
+.home-page .hp-row--recommended .hp-row-track > .mc-card {
     width: auto;
 }
-.home-page .hp-row--continue .hp-row-track > .mc-card .mc-media {
+.home-page .hp-row--continue .hp-row-track > .mc-card .mc-media,
+.home-page .hp-row--recommended .hp-row-track > .mc-card .mc-media {
     height: clamp(112px, 13vh, 136px);
 }
 

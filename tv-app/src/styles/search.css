@@ -190,11 +190,23 @@
     padding: 0;
 }
 
-.sp2-card.focused,
 .sp2-card:hover {
     border-color: #e50914;
     box-shadow: 0 0 0 2px rgba(229, 9, 20, 0.28);
     transform: translateY(-1px);
+}
+
+/* Match the sort-selector / movie-modal highlight: hard white ring,
+   scale up, outer glow, lifted via z-index so the glow isn't clipped
+   by neighbouring cards. The previous red-border + 1px lift was too
+   subtle on the dense result grids. */
+.sp2-card-wrap.focused .sp2-card,
+.sp2-card.focused {
+    position: relative;
+    z-index: 10;
+    border-color: transparent;
+    box-shadow: 0 0 0 2px #fff, 0 0 18px rgba(255, 255, 255, 0.45);
+    transform: scale(1.075);
 }
 
 .sp2-card-media {

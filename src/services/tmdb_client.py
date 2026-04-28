@@ -199,3 +199,15 @@ class TMDBClient:
 
     def get_tv_genre_list(self) -> Optional[Dict[str, Any]]:
         return self.get("genre/tv/list")
+
+    def get_movie_similar(self, tmdb_id: int) -> Optional[Dict[str, Any]]:
+        return self.get(f"movie/{tmdb_id}/similar", params={"page": 1})
+
+    def get_tv_similar(self, tmdb_id: int) -> Optional[Dict[str, Any]]:
+        return self.get(f"tv/{tmdb_id}/similar", params={"page": 1})
+
+    def get_movie_recommendations(self, tmdb_id: int) -> Optional[Dict[str, Any]]:
+        return self.get(f"movie/{tmdb_id}/recommendations", params={"page": 1})
+
+    def get_tv_recommendations(self, tmdb_id: int) -> Optional[Dict[str, Any]]:
+        return self.get(f"tv/{tmdb_id}/recommendations", params={"page": 1})

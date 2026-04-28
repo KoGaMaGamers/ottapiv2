@@ -46,12 +46,26 @@ import MovieMediaCard from "../components/MovieMediaCard";
 import SeriesMediaCard from "../components/SeriesMediaCard";
 import { type CardItem } from "../components/cardItem";
 import { openPlayer } from "../stores/player";
-import { FilmIcon, ResumeIcon, StarIcon, TvIcon } from "../components/icons";
+import {
+  BookmarkIcon,
+  FilmIcon,
+  ResumeIcon,
+  SparkleIcon,
+  StarIcon,
+  TvIcon,
+} from "../components/icons";
 import {
   getContinueWatchingItems,
   playbackState,
   type ContinueItem,
 } from "../lib/playbackStore";
+import {
+  listWatchlist,
+  watchlistState,
+  type WatchlistItem,
+} from "../lib/watchlistStore";
+import { historyState, listHistory } from "../lib/historyStore";
+import { getRecommendations } from "../api/recommendations";
 
 // ---------------------------------------------------------------------------
 // Adapters: typed list items → UI shapes
@@ -231,15 +245,36 @@ interface HomeRow {
   icon: JSX.Element;
   label: string;
   /**
-   *   movie    — every card is a MovieListItem, opens player.
-   *   series   — every card is a SeriesListItem, navigates to detail.
-   *   continue — mixed; per-item dispatch via the carried PlaybackEntry
-   *              (movie → player, series → detail page).
+   *   movie         — every card is a MovieListItem, opens player.
+   *   series        — every card is a SeriesListItem, navigates to detail.
+   *   continue      — mixed; per-item dispatch via the carried
+   *                   PlaybackEntry (movie → player, series → detail).
+   *   watchlist     — mixed; same per-item dispatch model as continue
+   *                   but sourced from the watchlist store.
+   *   recommended   — mixed MovieListItem + SeriesListItem from the
+   *                   recommendations endpoint; per-item dispatch by
+   *                   item.type.
    */
-  variant: "movie" | "series" | "continue";
+  variant: "movie" | "series" | "continue" | "watchlist" | "recommended";
   items: CardItem[];
   showMore?: () => void;
-  raw: (MovieListItem | SeriesListItem | ContinueItem)[];
+  raw: (
+    | MovieListItem
+    | SeriesListItem
+    | ContinueItem
+    | WatchlistItem
+    | RecommendedItem
+  )[];
+}
+
+/** Recommendations are served as separate movie/series arrays; we
+ *  interleave them in the row and tag each entry with its kind so the
+ *  click dispatcher knows whether to open the player or navigate to
+ *  series detail without sniffing fields. */
+interface RecommendedItem {
+  kind: "movie" | "series";
+  movie?: MovieListItem;
+  series?: SeriesListItem;
 }
 
 /** Map a Continue-Watching entry to a CardItem so the existing
@@ -259,6 +294,45 @@ function continueToCard(entry: ContinueItem): CardItem {
     __progressPct: entry.__progressPct ?? undefined,
     __resumeSec: entry.__resumeSec,
     __durationSec: entry.__durationSec,
+  };
+}
+
+/** Interleave recommendation movies + series into a parallel
+ *  (cards, raw) pair. The raw entries are tagged with their kind so
+ *  resolveAndPlay can dispatch without re-sniffing field shapes. */
+function buildRecommendedRow(
+  movies: MovieListItem[],
+  series: SeriesListItem[],
+): { cards: CardItem[]; raw: RecommendedItem[] } {
+  const cards: CardItem[] = [];
+  const raw: RecommendedItem[] = [];
+  const len = Math.max(movies.length, series.length);
+  for (let i = 0; i < len; i++) {
+    if (movies[i]) {
+      cards.push(movieToCard(movies[i]));
+      raw.push({ kind: "movie", movie: movies[i] });
+    }
+    if (series[i]) {
+      cards.push(seriesToCard(series[i]));
+      raw.push({ kind: "series", series: series[i] });
+    }
+  }
+  return { cards, raw };
+}
+
+/** Map a watchlist entry to a CardItem. No progress overlay here —
+ *  the watchlist is a "saved for later" surface, the progress bar
+ *  belongs to Continue Watching. */
+function watchlistToCard(entry: WatchlistItem): CardItem {
+  return {
+    id: entry.id ?? entry.key,
+    title: entry.title || entry.name,
+    name: entry.name || entry.title,
+    poster: entry.logo,
+    backdrop: entry.backdrop,
+    year: entry.year,
+    genres: entry.genres,
+    type: entry.type,
   };
 }
 
@@ -336,6 +410,67 @@ export default function Home(): JSX.Element {
       .catch(() => [] as SeriesListItem[]);
   });
 
+  // ---------------------------------------------------------------------------
+  // Recommendations
+  // ---------------------------------------------------------------------------
+  // Fetch once on mount when the user has any completed-history seeds.
+  // The endpoint is server-driven (TMDB-similar + genre overlap), so a
+  // single call gives us a ranked mixed-type list. We re-query if the
+  // user finishes new content during this session — the source signal
+  // is `historyState()`.
+
+  const recommendationSource = createMemo(() => {
+    const seeds = listHistory()
+      .slice(0, 5)
+      .filter((h) => h.tmdb_id != null || (h.genres && h.genres.length > 0))
+      .map((h) => ({
+        type: h.type,
+        tmdb_id: h.tmdb_id != null ? Number(h.tmdb_id) : null,
+        genres: h.genres,
+      }));
+    if (seeds.length === 0) return null;
+
+    // Suppress what the user has already saved or is in the middle of
+    // watching — recommending those would feel redundant.
+    const excludeMovieIds = new Set<number>();
+    const excludeSeriesIds = new Set<number>();
+    for (const w of listWatchlist()) {
+      const id = Number(w.id);
+      if (!Number.isFinite(id)) continue;
+      (w.type === "series" ? excludeSeriesIds : excludeMovieIds).add(id);
+    }
+    for (const c of getContinueWatchingItems(50)) {
+      const id = Number(c.id);
+      if (!Number.isFinite(id)) continue;
+      (c.type === "series" ? excludeSeriesIds : excludeMovieIds).add(id);
+    }
+    // Translate the home-rails preference snapshots into the request
+    // shape the recommendations endpoint understands. Same semantics:
+    //   null  ("no restriction")     → omit the field
+    //   ""    ("empty deselection")  → []  (skip the pool)
+    //   "1,2" ("restrict")           → [1, 2]
+    const toIdList = (raw: string | null | ""): number[] | undefined => {
+      if (raw === null) return undefined;
+      if (raw === "") return [];
+      return raw
+        .split(",")
+        .map((t) => Number(t.trim()))
+        .filter((n) => Number.isFinite(n));
+    };
+    return {
+      seeds,
+      limit: 20,
+      exclude_movie_ids: [...excludeMovieIds],
+      exclude_series_ids: [...excludeSeriesIds],
+      movie_category_ids: toIdList(movieCat),
+      series_category_ids: toIdList(seriesCat),
+    };
+  });
+
+  const [recommended] = createResource(recommendationSource, (req) =>
+    getRecommendations(req).catch(() => ({ movies: [], series: [] })),
+  );
+
   const [heroIndex, setHeroIndex] = createSignal(0);
   const [heroAnimKey, setHeroAnimKey] = createSignal(0);
   const [focusedRow, setFocusedRow] = createSignal(-1);
@@ -350,9 +485,56 @@ export default function Home(): JSX.Element {
     latestMovies.error || topMovies.error || latestSeries.error;
 
   const resolveAndPlay = (
-    kind: "movie" | "series" | "continue",
-    item: MovieListItem | SeriesListItem | ContinueItem,
+    kind: "movie" | "series" | "continue" | "watchlist" | "recommended",
+    item:
+      | MovieListItem
+      | SeriesListItem
+      | ContinueItem
+      | WatchlistItem
+      | RecommendedItem,
   ) => {
+    if (kind === "recommended") {
+      const wrap = item as RecommendedItem;
+      if (wrap.kind === "series" && wrap.series) {
+        navigate(`/series/${wrap.series.id}`);
+      } else if (wrap.kind === "movie" && wrap.movie) {
+        openPlayer({ kind: "movie", movie: wrap.movie });
+      }
+      return;
+    }
+    if (kind === "watchlist") {
+      const entry = item as WatchlistItem;
+      if (entry.type === "series") {
+        const sid = Number(entry.id);
+        if (Number.isFinite(sid)) navigate(`/series/${sid}`);
+        return;
+      }
+      const mid = Number(entry.id);
+      if (!Number.isFinite(mid)) return;
+      openPlayer({
+        kind: "movie",
+        movie: {
+          id: mid,
+          name: entry.name || entry.title,
+          year: typeof entry.year === "number" ? entry.year : null,
+          language: entry.language,
+          rating_5based:
+            typeof entry.rating === "number" ? entry.rating : null,
+          cover_big: entry.logo,
+          stream_icon: entry.logo,
+          backdrop_path: entry.backdrop,
+          tmdb_id:
+            entry.tmdb_id != null ? Number(entry.tmdb_id) : null,
+          o_language: null,
+          tmdb_vote_average: null,
+          tmdb_popularity: null,
+          duration_secs: null,
+          added: null,
+          genres: entry.genres,
+        } as MovieListItem,
+      });
+      return;
+    }
     if (kind === "continue") {
       const entry = item as ContinueItem;
       if (entry.type === "movie") {
@@ -396,7 +578,7 @@ export default function Home(): JSX.Element {
       // Series → open the dedicated detail page where the user picks
       // an episode (auto-play first episode would skip the season tabs
       // the legacy SeriesDetail relies on for resume).
-      navigate(`/series/${item.id}`);
+      navigate(`/series/${(item as SeriesListItem).id}`);
     }
   };
 
@@ -414,11 +596,13 @@ export default function Home(): JSX.Element {
   );
 
   const rows = createMemo<HomeRow[]>(() => {
-    // Read playbackState() for reactive tracking — store updates after
-    // the player saves progress trigger a re-render of this memo, so
-    // the Continue Watching row reflects the latest position without
-    // a manual refresh.
+    // Read playbackState() / watchlistState() / historyState() for
+    // reactive tracking — store updates trigger a re-render of this
+    // memo, so user-sourced rows (Continue Watching, My Watchlist,
+    // You should like…) reflect adds / removes immediately.
     playbackState();
+    watchlistState();
+    historyState();
     const r: HomeRow[] = [];
     const lm = latestMovies() ?? [];
     const ls = latestSeries() ?? [];
@@ -434,6 +618,33 @@ export default function Home(): JSX.Element {
         items: continueItems.map(continueToCard),
         raw: continueItems,
       });
+    }
+
+    const watchlistItems = listWatchlist().slice(0, 20);
+    if (watchlistItems.length > 0) {
+      r.push({
+        id: "watchlist",
+        icon: <BookmarkIcon />,
+        label: "My Watchlist",
+        variant: "watchlist",
+        items: watchlistItems.map(watchlistToCard),
+        raw: watchlistItems,
+      });
+    }
+
+    const recs = recommended();
+    if (recs && (recs.movies.length > 0 || recs.series.length > 0)) {
+      const { cards, raw } = buildRecommendedRow(recs.movies, recs.series);
+      if (cards.length > 0) {
+        r.push({
+          id: "recommended",
+          icon: <SparkleIcon />,
+          label: "You should also like",
+          variant: "recommended",
+          items: cards,
+          raw,
+        });
+      }
     }
 
     if (lm.length > 0) {
@@ -624,7 +835,14 @@ function ContentRow(props: {
   row: HomeRow;
   isFocusedRow: boolean;
   focusedCol: number;
-  onPlay: (item: MovieListItem | SeriesListItem | ContinueItem) => void;
+  onPlay: (
+    item:
+      | MovieListItem
+      | SeriesListItem
+      | ContinueItem
+      | WatchlistItem
+      | RecommendedItem,
+  ) => void;
 }): JSX.Element {
   let trackRef: HTMLDivElement | undefined;
   let rowRef: HTMLDivElement | undefined;
@@ -674,10 +892,11 @@ function ContentRow(props: {
               const focused = () =>
                 props.isFocusedRow && props.focusedCol === colIndex();
               // Pick a card silhouette per-item: pure rows use the row
-              // variant, but Continue Watching mixes movie + series so
-              // we read item.type. Series posters are 2:3 portrait,
-              // movies are 16:9 landscape — using the right one keeps
-              // the row visually coherent with the rest of Home.
+              // variant, but Continue Watching / Watchlist mix movie +
+              // series so we read item.type. Series posters are 2:3
+              // portrait, movies are 16:9 landscape — using the right
+              // one keeps the row visually coherent with the rest of
+              // Home.
               const cardKind = (): "movie" | "series" =>
                 props.row.variant === "series"
                   ? "series"

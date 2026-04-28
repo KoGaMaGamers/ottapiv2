@@ -8,19 +8,16 @@
  * TMDB fetch and the embedded API key pattern.
  *
  * Keyboard model:
- *   ←/→     switch action focus (Play / [future] Watchlist)
+ *   ←/→     switch action focus (Play / Watchlist)
  *   Enter   activate focused action
  *   Esc/Back close
- *
- * Watchlist button is a placeholder — clicking does nothing — until the
- * watchlist store is ported. The button itself is shown so the layout
- * matches the legacy.
  */
 
 import {
   createSignal,
   createResource,
   createEffect,
+  createMemo,
   onCleanup,
   Show,
   type JSX,
@@ -28,7 +25,13 @@ import {
 import type { MovieListItem, MovieDetail } from "../api/types";
 import { getMovie } from "../api/catalog";
 import { useNavigationScope } from "../lib/navigation";
+import { isBackKey } from "../lib/navigationKeys";
 import { getGradient } from "../lib/gradient";
+import {
+  isInWatchlist,
+  toggleWatchlistItem,
+  watchlistState,
+} from "../lib/watchlistStore";
 
 export interface MovieDetailModalProps {
   movie: MovieListItem;
@@ -66,9 +69,12 @@ function extractYoutubeId(value: string | null | undefined): string | null {
 export default function MovieDetailModal(
   props: MovieDetailModalProps,
 ): JSX.Element {
+  // Priority 100 (modal tier) so we outprio higher-priority pages
+  // such as Search (90) — the modal must own keyboard input while
+  // mounted, regardless of which page launched it.
   const { isScopeOwner } = useNavigationScope("overlay:movie-detail", {
     active: true,
-    priority: 60,
+    priority: 100,
   });
 
   // 0 = Play, 1 = Watchlist (placeholder until watchlist store ports)
@@ -93,6 +99,38 @@ export default function MovieDetailModal(
   const year = () => detail()?.year ?? props.movie.year;
   const youtubeId = () => extractYoutubeId(detail()?.youtube_trailer);
 
+  // Watchlist payload — prefer the enriched detail (better metadata)
+  // and fall back to the list-row data so the button works while
+  // the detail call is still in flight.
+  const watchlistItem = () => {
+    const d = detail();
+    const m = props.movie;
+    return {
+      type: "movie" as const,
+      id: m.id,
+      tmdb_id: d?.tmdb_id ?? m.tmdb_id ?? null,
+      title: d?.name ?? m.name,
+      name: d?.name ?? m.name,
+      logo: d?.cover_big ?? m.cover_big ?? m.stream_icon ?? null,
+      backdrop: d?.backdrop_path ?? m.backdrop_path ?? null,
+      plot: d?.description ?? null,
+      rating: d?.rating_5based ?? m.rating_5based ?? null,
+      language: d?.language ?? m.language ?? null,
+      year: d?.year ?? m.year ?? null,
+      genres: d?.genres ?? m.genres ?? [],
+      container_extension: d?.container_extension ?? null,
+    };
+  };
+
+  const inWatchlist = createMemo<boolean>(() => {
+    watchlistState();
+    return isInWatchlist(watchlistItem());
+  });
+
+  function onToggleWatchlist() {
+    toggleWatchlistItem(watchlistItem());
+  }
+
   // Keyboard handler — scoped to this modal.
   //
   // The handler swallows ALL navigation keys (preventDefault +
@@ -110,15 +148,13 @@ export default function MovieDetailModal(
       "ArrowRight",
       "Enter",
       " ",
-      "Escape",
-      "Backspace",
     ];
     const handler = (e: KeyboardEvent) => {
       if (!isScopeOwner()) return;
-      if (!NAV.includes(e.key)) return;
+      if (!NAV.includes(e.key) && !isBackKey(e.key)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      if (e.key === "Escape" || e.key === "Backspace") {
+      if (isBackKey(e.key)) {
         props.onClose();
       } else if (e.key === "ArrowLeft") {
         setActionIdx((i) => Math.max(0, i - 1));
@@ -126,7 +162,7 @@ export default function MovieDetailModal(
         setActionIdx((i) => Math.min(1, i + 1));
       } else if (e.key === "Enter" || e.key === " ") {
         if (actionIdx() === 0) props.onPlay();
-        // Watchlist: no-op until store is ported.
+        else if (actionIdx() === 1) onToggleWatchlist();
       }
     };
     window.addEventListener("keydown", handler, true);
@@ -178,12 +214,10 @@ export default function MovieDetailModal(
             </button>
             <button
               class={`hp-btn secondary ${actionIdx() === 1 ? "mp-modal-action-focused" : ""}`}
-              onClick={() => {
-                /* Watchlist deferred until store ports */
-              }}
-              title="Watchlist coming soon"
+              onClick={onToggleWatchlist}
+              title={inWatchlist() ? "Remove from watchlist" : "Add to watchlist"}
             >
-              + Add to Watchlist
+              {inWatchlist() ? "✓ In Watchlist" : "+ Add to Watchlist"}
             </button>
           </div>
 

@@ -22,6 +22,8 @@
  */
 
 import { createSignal } from "solid-js";
+import { recordCompleted } from "./historyStore";
+import { removeWatchlistItem } from "./watchlistStore";
 
 const PLAYBACK_KEY = "ott_playback_progress_v1";
 const PLAYBACK_EVENT = "ott-playback-progress-changed";
@@ -244,9 +246,19 @@ export function savePlaybackProgress(
 
   if (opts.markCompleted || isCompleted(position, effDuration)) {
     if (cur[key]) {
+      const completed = cur[key];
       const next = { ...cur };
       delete next[key];
       writeToStorage(next);
+      // Cross-store cleanup: a completed item shouldn't keep
+      // squatting in the user's watchlist either. PlaybackEntry has
+      // the same identity fields the watchlist key derives from
+      // (type/id/xtream_id/tmdb_id/title/name), so the existing
+      // entry shape works as a WatchlistItemInput.
+      removeWatchlistItem(completed);
+      // Same shape works as a HistoryInput — record the completion
+      // signal so the "You should like…" row has seeds to draw from.
+      recordCompleted(completed);
     }
     return true;
   }

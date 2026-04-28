@@ -541,10 +541,15 @@
     color: #fff;
 }
 
-/* Modal action focus ring (mp-modal-action-focused, App.css 4860) */
+/* Modal action focus — match the sort-button highlight: a hard white
+   ring + scale-up + outer glow, lifted above sibling buttons via z-index
+   so the glow isn't clipped. Subtle states (translateY + thin
+   half-opacity ring) read as "hover", not "selected", on a TV screen. */
 .mp-modal-action-focused {
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 0 24px rgba(255, 255, 255, 0.28);
-    transform: translateY(-1px);
+    position: relative;
+    z-index: 10;
+    box-shadow: 0 0 0 2px #fff, 0 0 18px rgba(255, 255, 255, 0.45);
+    transform: scale(1.1);
 }
 
 /* Series detail rendered as a popup over the listing (Series.tsx).

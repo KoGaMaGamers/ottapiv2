@@ -1,12 +1,26 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  type JSX,
+} from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
 import { appShellZone, setAppShellZone } from "../stores/shell";
 import { useNavigationScope } from "../lib/navigation";
 import { isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
+import { SearchIcon, UserIcon } from "./icons";
+import logoUrl from "/128x128@2x.png?url";
 
 interface NavTab {
   label: string;
   path: string;
+  /** When set, the tab renders this icon instead of the text label and
+   *  groups itself onto the right-hand side of the bar (after the
+   *  spacer). Search + Profile use this. */
+  icon?: () => JSX.Element;
 }
 
 const TABS: NavTab[] = [
@@ -14,9 +28,13 @@ const TABS: NavTab[] = [
   { label: "Live", path: "/live" },
   { label: "Movies", path: "/movies" },
   { label: "Series", path: "/series" },
-  { label: "Search", path: "/search" },
-  { label: "Profile", path: "/profile" },
+  { label: "Search", path: "/search", icon: () => <SearchIcon /> },
+  { label: "Profile", path: "/profile", icon: () => <UserIcon /> },
 ];
+
+/** First index of the icon group — everything from this index onwards
+ *  is rendered after the flex spacer (right-aligned). */
+const ICON_GROUP_START = TABS.findIndex((t) => !!t.icon);
 
 /**
  * Top navigation strip. D-pad-active when `appShellZone() === "nav"`.
@@ -94,12 +112,26 @@ export default function TopNav() {
         appShellZone() === "nav" ? "border-violet-500/40" : "border-zinc-900"
       }`}
     >
-      <span class="mr-4 text-violet-400 font-semibold tracking-wide">OTT</span>
+      <div class="mr-4 flex items-center gap-2">
+        <img
+          src={logoUrl}
+          alt=""
+          class="h-7 w-7 rounded-md"
+          draggable={false}
+        />
+        <span class="text-zinc-100 font-semibold tracking-wide">
+          Symbioplayer
+        </span>
+      </div>
       <For each={TABS}>
         {(tab, i) => {
           const isFocused = () =>
             appShellZone() === "nav" && focused() === i();
           const isActive = () => activeIdx() === i();
+          const isIcon = !!tab.icon;
+          // First icon-group item gets pushed to the right via
+          // ml-auto; subsequent icon-group items follow naturally.
+          const isFirstIcon = i() === ICON_GROUP_START;
           return (
             <button
               onClick={() => {
@@ -107,17 +139,19 @@ export default function TopNav() {
                 navigate(tab.path);
                 setAppShellZone("content");
               }}
-              class={`px-3 py-1.5 rounded-md text-sm font-medium outline-none transition-colors ${
-                isActive()
-                  ? "text-white"
-                  : "text-zinc-400 hover:text-zinc-200"
+              title={tab.label}
+              aria-label={tab.label}
+              class={`${isIcon ? "p-2 text-base" : "px-3 py-1.5 text-sm"} rounded-md font-medium outline-none transition-colors ${
+                isFirstIcon ? "ml-auto" : ""
+              } ${
+                isActive() ? "text-white" : "text-zinc-400 hover:text-zinc-200"
               } ${
                 isFocused()
                   ? "bg-violet-600/30 ring-1 ring-violet-400"
                   : ""
               }`}
             >
-              {tab.label}
+              {isIcon ? tab.icon!() : tab.label}
             </button>
           );
         }}

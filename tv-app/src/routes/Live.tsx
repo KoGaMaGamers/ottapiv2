@@ -277,12 +277,29 @@ export default function Live(): JSX.Element {
   >([]);
 
   // Apply prefs.live + adult filter once when tree lands (top level only).
+  //
+  // prefs.live filters by category id, but Profile's prefs picker
+  // intentionally excludes adult categories from selection (they're
+  // gated by their own pref) — so adult cats are never in
+  // `prefs.live` and the live-prefs filter would silently drop them.
+  // Re-include any adult roots from the original list after the
+  // live filter; the adult opt-out (`adultPrefs === []`) is the only
+  // control that should hide them from the sidebar.
   createEffect(
     on(tree, (roots) => {
       if (!roots) return;
       const flatRoots = flattenRoots(roots);
       const prefs = getContentPrefs();
       let filtered = filterByPrefs(flatRoots, prefs.live);
+      if (prefs.live !== null && prefs.live.length > 0) {
+        const seen = new Set(filtered.map((c) => c.id));
+        for (const cat of flatRoots) {
+          if (isAdultCategory(cat) && !seen.has(cat.id)) {
+            filtered.push(cat);
+            seen.add(cat.id);
+          }
+        }
+      }
       const adultPrefs = getAdultPrefs();
       if (adultPrefs !== null && adultPrefs.length === 0) {
         filtered = filtered.filter((cat) => !isAdultCategory(cat));

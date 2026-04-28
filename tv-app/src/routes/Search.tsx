@@ -26,6 +26,7 @@ import {
   createSignal,
   createMemo,
   createEffect,
+  createRoot,
   on,
   onCleanup,
   Show,
@@ -214,6 +215,34 @@ function resultToCardItem(r: SearchResult): CardItem {
 }
 
 // ---------------------------------------------------------------------------
+// Persistent search state
+// ---------------------------------------------------------------------------
+//
+// These signals live at module scope (inside a createRoot for owner
+// hygiene) so the user's query + last result set survive a route
+// remount. The driving case: navigate from a series result to
+// /series/:id, hit Back, and land back on Search with the input still
+// populated and the cards still in place. Component-local signals
+// would reset to empty on remount.
+//
+// Trade-off: cached results may be stale if the user comes back much
+// later, but the debounced effect re-runs on mount with the persisted
+// query so a fresh fetch lands a moment after the cached results
+// flash in. Net UX is "instant restore + background refresh", which
+// is what the user expects from search-state continuity.
+
+const persisted = createRoot(() => {
+  const [query, setQuery] = createSignal("");
+  const [predictions, setPredictions] = createSignal<string[]>([]);
+  const [groups, setGroups] = createSignal<ResultGroups>({
+    live: [],
+    movies: [],
+    series: [],
+  });
+  return { query, setQuery, predictions, setPredictions, groups, setGroups };
+});
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -224,14 +253,9 @@ export default function Search(): JSX.Element {
     priority: 90,
   });
 
-  const [query, setQuery] = createSignal("");
+  const { query, setQuery, predictions, setPredictions, groups, setGroups } =
+    persisted;
   const [loading, setLoading] = createSignal(false);
-  const [predictions, setPredictions] = createSignal<string[]>([]);
-  const [groups, setGroups] = createSignal<ResultGroups>({
-    live: [],
-    movies: [],
-    series: [],
-  });
 
   const [zone, setZone] = createSignal<Zone>("queryHeader");
   const [lastSidebarZone, setLastSidebarZone] = createSignal<

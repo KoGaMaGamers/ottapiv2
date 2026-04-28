@@ -82,6 +82,53 @@ export function ResumeIcon(props: IconProps): JSX.Element {
   );
 }
 
+/** Sparkle — recommendations / "You should like…". */
+export function SparkleIcon(props: IconProps): JSX.Element {
+  return svg(
+    props,
+    <>
+      <path d="M12 3v4" />
+      <path d="M12 17v4" />
+      <path d="M3 12h4" />
+      <path d="M17 12h4" />
+      <path d="M5.6 5.6l2.8 2.8" />
+      <path d="M15.6 15.6l2.8 2.8" />
+      <path d="M5.6 18.4l2.8-2.8" />
+      <path d="M15.6 8.4l2.8-2.8" />
+    </>,
+  );
+}
+
+/** Bookmark — My Watchlist. */
+export function BookmarkIcon(props: IconProps): JSX.Element {
+  return svg(
+    props,
+    <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />,
+  );
+}
+
+/** Magnifier — Search. */
+export function SearchIcon(props: IconProps): JSX.Element {
+  return svg(
+    props,
+    <>
+      <circle cx="11" cy="11" r="7" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </>,
+  );
+}
+
+/** User silhouette — Profile. */
+export function UserIcon(props: IconProps): JSX.Element {
+  return svg(
+    props,
+    <>
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </>,
+  );
+}
+
 /** Tower — Live channels. */
 export function BroadcastIcon(props: IconProps): JSX.Element {
   return svg(
