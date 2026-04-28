@@ -56,7 +56,20 @@
     background: transparent;
     letter-spacing: 0.2px;
     transition: color 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
 }
+.hp-row-title-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.1em;
+    height: 1.1em;
+    color: rgba(255,255,255,0.62);
+    transition: color 0.2s;
+}
+.hp-row.row-focused .hp-row-title-icon { color: #e50914; }
 .hp-row.row-focused .hp-row-title { color: #e50914; }
 
 .hp-row-more {

@@ -46,6 +46,7 @@ import MovieMediaCard from "../components/MovieMediaCard";
 import SeriesMediaCard from "../components/SeriesMediaCard";
 import { type CardItem } from "../components/cardItem";
 import { openPlayer } from "../stores/player";
+import { FilmIcon, StarIcon, TvIcon } from "../components/icons";
 
 // ---------------------------------------------------------------------------
 // Adapters: typed list items → UI shapes
@@ -220,7 +221,10 @@ function buildHeroPool(
 
 interface HomeRow {
   id: string;
-  title: string;
+  /** Inline icon rendered before the label — keeps row headers visually
+   *  consistent without relying on emoji sprites that look dated. */
+  icon: JSX.Element;
+  label: string;
   variant: "movie" | "series";
   items: CardItem[];
   showMore?: () => void;
@@ -349,7 +353,8 @@ export default function Home(): JSX.Element {
     if (lm.length > 0) {
       r.push({
         id: "latestMovies",
-        title: "🎬 Latest Movies",
+        icon: <FilmIcon />,
+        label: "Latest Movies",
         variant: "movie",
         items: lm.slice(0, 20).map(movieToCard),
         showMore: () => navigate("/movies"),
@@ -359,7 +364,8 @@ export default function Home(): JSX.Element {
     if (ls.length > 0) {
       r.push({
         id: "latestSeries",
-        title: "📺 Latest Series",
+        icon: <TvIcon />,
+        label: "Latest Series",
         variant: "series",
         items: ls.slice(0, 20).map(seriesToCard),
         showMore: () => navigate("/series"),
@@ -369,7 +375,8 @@ export default function Home(): JSX.Element {
     if (tm.length > 0) {
       r.push({
         id: "topMovies",
-        title: "⭐ Top Rated Movies",
+        icon: <StarIcon />,
+        label: "Top Rated Movies",
         variant: "movie",
         items: tm.slice(0, 20).map(movieToCard),
         showMore: () => navigate("/movies"),
@@ -564,7 +571,10 @@ function ContentRow(props: {
       }`}
     >
       <div class="hp-row-header">
-        <h2 class="hp-row-title">{props.row.title}</h2>
+        <h2 class="hp-row-title">
+          <span class="hp-row-title-icon">{props.row.icon}</span>
+          {props.row.label}
+        </h2>
         <Show when={props.row.showMore}>
           <button class="hp-row-more" onClick={props.row.showMore}>
             See all <span class="hp-row-more-arrow">›</span>
