@@ -228,8 +228,13 @@ export default function Series(): JSX.Element {
     null,
   );
 
-  let gridRef: HTMLDivElement | undefined;
-  let gridLoadMoreRef: HTMLDivElement | undefined;
+  // Refs as signals so the IntersectionObserver effect re-runs when the
+  // grid + sentinel mount. Plain `let`s caused the effect to bail on
+  // first run (refs undefined) and never re-run, so infinite scroll
+  // silently no-op'd.
+  const [gridRef, setGridRef] = createSignal<HTMLDivElement | null>(null);
+  const [gridLoadMoreRef, setGridLoadMoreRef] =
+    createSignal<HTMLDivElement | null>(null);
   let loadDebounce: number | null = null;
 
   const loadForGenre = async (
@@ -356,12 +361,12 @@ export default function Series(): JSX.Element {
     }, 200);
   };
 
-  // Infinite scroll
+  // Infinite scroll — see Movies.tsx for why refs are signals.
   createEffect(() => {
-    const root = gridRef;
-    const target = gridLoadMoreRef;
+    const root = gridRef();
+    const target = gridLoadMoreRef();
     if (!root || !target) return;
-    if (zone() !== "grid" || !genreHasMore()) return;
+    if (!genreHasMore()) return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) {
@@ -387,7 +392,7 @@ export default function Series(): JSX.Element {
     if (zone() !== "grid") return;
     const i = gridIdx();
     queueMicrotask(() => {
-      const child = gridRef?.children[i] as HTMLElement | undefined;
+      const child = gridRef()?.children[i] as HTMLElement | undefined;
       child?.scrollIntoView({
         block: "nearest",
         inline: "nearest",
@@ -410,7 +415,7 @@ export default function Series(): JSX.Element {
   const moveByGeometry = (
     direction: "up" | "down" | "left" | "right",
   ): number | null => {
-    const grid = gridRef;
+    const grid = gridRef();
     if (!grid) return null;
     const cards = Array.from(grid.children).filter(
       (el) => !(el as HTMLElement).classList.contains("sp-grid-load-sentinel"),
@@ -685,7 +690,7 @@ export default function Series(): JSX.Element {
                 </div>
               }
             >
-              <div class="sp-genre-grid" ref={(el) => (gridRef = el)}>
+              <div class="sp-genre-grid" ref={(el) => setGridRef(el)}>
                 <For each={genreSeries()}>
                   {(s, i) => (
                     <SeriesMediaCard
@@ -698,7 +703,7 @@ export default function Series(): JSX.Element {
                 <Show when={genreHasMore() || genreLoadingMore()}>
                   <div
                     class="sp-grid-load-sentinel"
-                    ref={(el) => (gridLoadMoreRef = el)}
+                    ref={(el) => setGridLoadMoreRef(el)}
                   >
                     {genreLoadingMore() ? "Loading more…" : ""}
                   </div>

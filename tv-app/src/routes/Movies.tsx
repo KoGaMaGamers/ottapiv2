@@ -263,9 +263,13 @@ export default function Movies(): JSX.Element {
     null,
   );
 
-  // Refs (for geometry-based grid nav) ------------------------------------
-  let gridRef: HTMLDivElement | undefined;
-  let gridLoadMoreRef: HTMLDivElement | undefined;
+  // Refs (for geometry-based grid nav) — signals so the
+  // IntersectionObserver effect re-runs when the elements mount.
+  // With plain `let`s, the effect ran once with both undefined and
+  // never re-ran, so infinite scroll never attached.
+  const [gridRef, setGridRef] = createSignal<HTMLDivElement | null>(null);
+  const [gridLoadMoreRef, setGridLoadMoreRef] =
+    createSignal<HTMLDivElement | null>(null);
   let loadDebounce: number | null = null;
 
   // ── Load movies for a given genre (replaces page or appends) ──────────
@@ -403,11 +407,15 @@ export default function Movies(): JSX.Element {
   };
 
   // ── IntersectionObserver for infinite scroll ─────────────────────────
+  // Tracks gridRef + gridLoadMoreRef signals so the observer attaches as
+  // soon as both elements mount. The previous version used plain `let`s
+  // and the effect bailed on first run (refs still undefined), then
+  // never re-ran, so infinite scroll silently no-op'd.
   createEffect(() => {
-    const root = gridRef;
-    const target = gridLoadMoreRef;
+    const root = gridRef();
+    const target = gridLoadMoreRef();
     if (!root || !target) return;
-    if (zone() !== "grid" || !genreHasMore()) return;
+    if (!genreHasMore()) return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) {
@@ -433,7 +441,7 @@ export default function Movies(): JSX.Element {
     if (zone() !== "grid") return;
     const i = gridIdx();
     queueMicrotask(() => {
-      const child = gridRef?.children[i] as HTMLElement | undefined;
+      const child = gridRef()?.children[i] as HTMLElement | undefined;
       child?.scrollIntoView({
         block: "nearest",
         inline: "nearest",
@@ -452,7 +460,7 @@ export default function Movies(): JSX.Element {
   const moveByGeometry = (
     direction: "up" | "down" | "left" | "right",
   ): number | null => {
-    const grid = gridRef;
+    const grid = gridRef();
     if (!grid) return null;
     const cards = Array.from(grid.children).filter(
       (el) => !(el as HTMLElement).classList.contains("sp-grid-load-sentinel"),
@@ -732,7 +740,7 @@ export default function Movies(): JSX.Element {
             >
               <div
                 class="sp-genre-grid sp-genre-grid--movies"
-                ref={(el) => (gridRef = el)}
+                ref={(el) => setGridRef(el)}
               >
                 <For each={genreMovies()}>
                   {(m, i) => (
@@ -746,7 +754,7 @@ export default function Movies(): JSX.Element {
                 <Show when={genreHasMore() || genreLoadingMore()}>
                   <div
                     class="sp-grid-load-sentinel"
-                    ref={(el) => (gridLoadMoreRef = el)}
+                    ref={(el) => setGridLoadMoreRef(el)}
                   >
                     {genreLoadingMore() ? "Loading more…" : ""}
                   </div>
