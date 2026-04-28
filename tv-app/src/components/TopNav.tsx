@@ -107,10 +107,13 @@ export default function TopNav() {
   );
 
   return (
+    // Fixed (not sticky) so the page content can extend behind the
+    // bar — Home's hero / preview / poster fills the viewport with
+    // the nav floating on top. The black→transparent gradient gives
+    // enough contrast for the brand + tab labels without the heavy
+    // backdrop-blur slab the nav had before.
     <nav
-      class={`sticky top-0 z-30 flex items-center gap-1 px-6 py-3 bg-zinc-950/85 backdrop-blur-md border-b transition-colors ${
-        appShellZone() === "nav" ? "border-violet-500/40" : "border-zinc-900"
-      }`}
+      class="fixed top-0 left-0 right-0 z-30 flex items-center gap-1 px-6 py-3 bg-gradient-to-b from-black/65 via-black/30 to-transparent"
     >
       <div class="mr-4 flex items-center gap-2">
         <img
