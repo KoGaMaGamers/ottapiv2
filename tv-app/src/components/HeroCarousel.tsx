@@ -37,11 +37,13 @@ import {
   createEffect,
   createMemo,
   onCleanup,
+  onMount,
   on,
   Show,
   For,
   type JSX,
 } from "solid-js";
+import Hls from "hls.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -245,13 +247,13 @@ export default function HeroCarousel(props: HeroCarouselProps): JSX.Element {
 
         <Show when={previewEnabled() && showPreview() && activePreviewClip()?.url}>
           <div class="hp-hero-preview">
-            {/*
-              Placeholder slot until VideoPlayer is ported. The wrapper
-              keeps the layout (positioning + gradients defined in
-              hero.css) so the surrounding hero looks correct in the
-              meantime.
-            */}
-            <div class="video-player-wrapper" />
+            <PreviewVideo
+              url={activePreviewClip()!.url!}
+              startAtSec={activePreviewClip()!.startAtSec ?? 300}
+              onReady={(handle) => {
+                previewPlayer = handle;
+              }}
+            />
           </div>
         </Show>
 
@@ -365,5 +367,95 @@ export default function HeroCarousel(props: HeroCarouselProps): JSX.Element {
         </Show>
       </section>
     </Show>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PreviewVideo — inline muted-autoplay element that drives the hero clip.
+//
+// Lives here (vs the full MediaPlayer) because it has very different
+// requirements: muted, no controls, fire-and-forget, fast tear-down. Mounts
+// fresh on each clip change — simpler than swapping sources, and the
+// HeroCarousel's previewSwitchReq epoch debounces rapid focus changes so
+// we're not actually re-mounting on every keystroke.
+// ---------------------------------------------------------------------------
+
+function PreviewVideo(props: {
+  url: string;
+  startAtSec: number;
+  onReady: (h: VideoPlayerHandle) => void;
+}): JSX.Element {
+  let videoEl: HTMLVideoElement | undefined;
+  let hls: Hls | null = null;
+
+  onMount(() => {
+    if (!videoEl) return;
+    const url = props.url;
+    const looksHls = /\.m3u8(\?|$)/i.test(url);
+    const canNative = videoEl.canPlayType("application/vnd.apple.mpegurl");
+
+    if (looksHls && Hls.isSupported() && !canNative) {
+      hls = new Hls({ maxBufferLength: 30 });
+      hls.loadSource(url);
+      hls.attachMedia(videoEl);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        videoEl?.play().catch(() => {
+          /* autoplay blocked — preview just stays paused */
+        });
+      });
+    } else {
+      videoEl.src = url;
+      videoEl.play().catch(() => {});
+    }
+
+    props.onReady({
+      destroy: () => {
+        if (hls) {
+          try {
+            hls.destroy();
+          } catch {
+            /* ignore */
+          }
+          hls = null;
+        }
+      },
+      stop: () => {
+        try {
+          videoEl?.pause();
+        } catch {
+          /* ignore */
+        }
+      },
+      seekTo: (sec: number) => {
+        if (videoEl) {
+          try {
+            videoEl.currentTime = Math.max(0, sec);
+          } catch {
+            /* seek may fail on live streams — silent */
+          }
+        }
+      },
+    });
+  });
+
+  onCleanup(() => {
+    if (hls) {
+      try {
+        hls.destroy();
+      } catch {
+        /* ignore */
+      }
+      hls = null;
+    }
+  });
+
+  return (
+    <video
+      ref={(el) => (videoEl = el)}
+      class="hp-hero-preview-video"
+      muted
+      autoplay
+      playsinline
+    />
   );
 }

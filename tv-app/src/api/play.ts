@@ -43,3 +43,26 @@ export function release(allocation_token: string): Promise<{ released: boolean }
     allocation_token,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Preview URLs — direct stream URL with the user's own credentials, no slot
+// allocation. Used by hero carousels for hover-preview clips. The single-
+// connection cap on a provider account is policy more than a hard limit, so
+// we don't gate previews on slot availability.
+// ---------------------------------------------------------------------------
+
+export interface PreviewUrl {
+  url: string;
+}
+
+export function previewMovie(movieId: number): Promise<PreviewUrl> {
+  return api.get<PreviewUrl>(`/api/v1/play/preview/movie/${movieId}`);
+}
+
+export function previewEpisode(episodeId: number): Promise<PreviewUrl> {
+  return api.get<PreviewUrl>(`/api/v1/play/preview/episode/${episodeId}`);
+}
+
+export function previewLive(liveId: number): Promise<PreviewUrl> {
+  return api.get<PreviewUrl>(`/api/v1/play/preview/live/${liveId}`);
+}

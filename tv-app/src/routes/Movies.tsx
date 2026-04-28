@@ -68,6 +68,8 @@ import {
 } from "../lib/sortPrefs";
 import SortSelector from "../components/SortSelector";
 import { openPlayer } from "../stores/player";
+import { previewMovie } from "../api/play";
+import type { PreviewClip } from "../components/HeroCarousel";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -543,6 +545,44 @@ export default function Movies(): JSX.Element {
     );
   });
 
+  // ── Hero preview clip ──────────────────────────────────────────────
+  // After the focused card is held for 3s (legacy debounce so quick
+  // browsing doesn't kick off requests), fetch a direct stream URL
+  // (no slot allocation — see /api/v1/play/preview/movie) and feed
+  // it to HeroCarousel as a 60-second clip starting somewhere between
+  // 5–10 minutes in. The previewSwitchReq epoch inside HeroCarousel
+  // discards stale switches when focus moves before the clip lands.
+  const [heroPreviewClip, setHeroPreviewClip] =
+    createSignal<PreviewClip | null>(null);
+  let previewDelay: number | null = null;
+  let previewReqId = 0;
+  createEffect(() => {
+    const fg = focusedGridMovie();
+    if (previewDelay != null) clearTimeout(previewDelay);
+    previewReqId += 1;
+    setHeroPreviewClip(null);
+    if (!fg || selectedMovie()) return;
+    const reqId = previewReqId;
+    previewDelay = window.setTimeout(async () => {
+      if (previewReqId !== reqId) return;
+      try {
+        const { url } = await previewMovie(fg.id);
+        if (previewReqId !== reqId) return;
+        setHeroPreviewClip({
+          clipId: `${fg.id}-${Date.now()}`,
+          url,
+          startAtSec: 300 + Math.floor(Math.random() * 300),
+          playForSec: 60,
+        });
+      } catch {
+        /* preview failed — silent */
+      }
+    }, 3000);
+  });
+  onCleanup(() => {
+    if (previewDelay != null) clearTimeout(previewDelay);
+  });
+
   // ── Keyboard handler ─────────────────────────────────────────────────
   createEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -668,8 +708,8 @@ export default function Movies(): JSX.Element {
           activeIndex={0}
           animKey={0}
           items={heroItems()}
-          previewClip={null}
-          previewEnabled={false}
+          previewClip={heroPreviewClip()}
+          previewEnabled={!selectedMovie()}
           focused={zone() === "hero"}
         />
       </Show>

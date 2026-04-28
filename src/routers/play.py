@@ -139,3 +139,60 @@ def release_endpoint(
     if not do_release(db, user, body.allocation_token):
         raise HTTPException(status_code=404, detail="allocation not found")
     return {"released": True}
+
+
+# ---------------------------------------------------------------------------
+# Preview URL — direct stream URL with the user's OWN credentials, no slot
+# allocation. Used by hero carousels for hover-preview clips.
+# ---------------------------------------------------------------------------
+#
+# The single-connection cap on a provider account is policy more than a hard
+# limit (providers ban abusers, not occasional double-streams), so previews
+# don't need to gate on slot availability. We just hand back the same kind
+# of direct stream URL the legacy app built client-side, except now the
+# creds stay on the server.
+
+class PreviewResponse(BaseModel):
+    url: str
+
+
+@router.get("/preview/movie/{movie_id}", response_model=PreviewResponse)
+def preview_movie(
+    movie_id: int,
+    user: IPTVUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    movie = db.get(MovieStream, movie_id)
+    if movie is None or movie.provider_id != user.provider_id:
+        raise HTTPException(status_code=404, detail="movie not found")
+    ext = movie.container_extension or "mp4"
+    url = build_stream_url(user, "movie", movie.xtream_id, ext)
+    return PreviewResponse(url=url)
+
+
+@router.get("/preview/episode/{episode_id}", response_model=PreviewResponse)
+def preview_episode(
+    episode_id: int,
+    user: IPTVUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    ep = db.get(SeriesEpisode, episode_id)
+    if ep is None or ep.provider_id != user.provider_id:
+        raise HTTPException(status_code=404, detail="episode not found")
+    ext = ep.container_extension or "mkv"
+    url = build_stream_url(user, "series", ep.xtream_id, ext)
+    return PreviewResponse(url=url)
+
+
+@router.get("/preview/live/{live_id}", response_model=PreviewResponse)
+def preview_live(
+    live_id: int,
+    user: IPTVUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    live = db.get(LiveStream, live_id)
+    if live is None or live.provider_id != user.provider_id:
+        raise HTTPException(status_code=404, detail="live stream not found")
+    ext = user.preferred_output or "m3u8"
+    url = build_stream_url(user, "live", live.stream_id, ext)
+    return PreviewResponse(url=url)
