@@ -8,10 +8,18 @@ import tailwindcss from "@tailwindcss/vite";
 // paths absolute against the public hostname.
 const BACKEND = "https://ottapi.smartbunker.fr";
 
+// Tauri Android sets TAURI_DEV_HOST to the dev box's LAN IP so the
+// device's WebView can reach the Vite dev server directly. When unset
+// (plain browser dev / desktop Tauri), bind to 127.0.0.1 only.
+const host = process.env.TAURI_DEV_HOST ?? "127.0.0.1";
+
 export default defineConfig({
   plugins: [solid(), tailwindcss()],
+  // Don't clear the terminal — `cargo tauri dev` interleaves Vite +
+  // Rust output, and clearing wipes Rust errors mid-build.
+  clearScreen: false,
   server: {
-    host: "127.0.0.1",
+    host,
     port: 5173,
     strictPort: true,
     proxy: {
@@ -19,6 +27,8 @@ export default defineConfig({
       "/auth": { target: BACKEND, changeOrigin: true, secure: true },
     },
   },
+  // Tauri exposes its own env vars; let Vite surface them to the app.
+  envPrefix: ["VITE_", "TAURI_ENV_"],
   build: {
     target: "es2020",
     sourcemap: true,
