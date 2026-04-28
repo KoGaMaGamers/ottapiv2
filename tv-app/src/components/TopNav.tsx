@@ -34,8 +34,17 @@ export default function TopNav() {
   const location = useLocation();
   const [focused, setFocused] = createSignal(0);
 
+  // Priority needs to beat any page scope (pages register at 30) so
+  // that when appShellZone flips to "nav", the scope-stack actually
+  // hands input ownership to TopNav. Without this, the visual nav
+  // highlight tracked the zone signal but ←/→ keys still went to the
+  // page handler (which had higher priority and silently swallowed
+  // them) — user could see Movies/Live/Profile lit up but couldn't
+  // move between tabs. The active flag still gates whether the scope
+  // exists in the stack at all, so a high priority is harmless when
+  // the user's not in nav mode.
   const { isScopeOwner, setActive } = useNavigationScope("topnav", {
-    priority: 0,
+    priority: 100,
     active: appShellZone() === "nav",
   });
 
