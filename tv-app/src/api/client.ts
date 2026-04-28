@@ -61,11 +61,7 @@ async function request<T>(
   }
 
   if (!resp.ok) {
-    const detail =
-      (parsed && typeof parsed === "object" && parsed.detail) ||
-      (typeof parsed === "string" && parsed) ||
-      `HTTP ${resp.status}`;
-    throw new ApiError(resp.status, detail);
+    throw new ApiError(resp.status, formatErrorDetail(parsed, resp.status));
   }
 
   return parsed as T;
@@ -75,3 +71,39 @@ export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
 };
+
+/**
+ * Coerce whatever shape the backend returned for an error into a
+ * single human-readable string. The trickiest case is FastAPI's 422
+ * — it returns `{ detail: [{ loc: [...], msg: "..." }, ...] }`, an
+ * array that previously stringified to "[object Object]" because the
+ * caller just dropped it into a template literal.
+ */
+function formatErrorDetail(parsed: unknown, status: number): string {
+  if (typeof parsed === "string" && parsed) return parsed;
+  if (parsed && typeof parsed === "object") {
+    const detail = (parsed as { detail?: unknown }).detail;
+    if (Array.isArray(detail)) {
+      // Pydantic validation errors: each entry is { loc, msg, type }.
+      // Show "field: msg" so the user can see *which* field is wrong.
+      return detail
+        .map((e) => {
+          if (e && typeof e === "object") {
+            const loc = Array.isArray((e as { loc?: unknown }).loc)
+              ? ((e as { loc: unknown[] }).loc.slice(1) as unknown[])
+                  .map(String)
+                  .join(".")
+              : "";
+            const msg =
+              (e as { msg?: string }).msg ?? JSON.stringify(e);
+            return loc ? `${loc}: ${msg}` : msg;
+          }
+          return String(e);
+        })
+        .join("; ");
+    }
+    if (typeof detail === "string") return detail;
+    if (detail != null) return JSON.stringify(detail);
+  }
+  return `HTTP ${status}`;
+}

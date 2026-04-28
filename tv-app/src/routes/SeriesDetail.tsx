@@ -31,6 +31,7 @@ import {
   Show,
 } from "solid-js";
 import { useParams } from "@solidjs/router";
+import logoUrl from "/128x128@2x.png?url";
 import { getSeasonEpisodes, getSeries } from "../api/catalog";
 import type { EpisodeOut, SeasonOut } from "../api/types";
 import { useNavigationScope } from "../lib/navigation";
@@ -38,14 +39,16 @@ import { isBackKey, isDirectionalKey, isSelectKey } from "../lib/navigationKeys"
 import { appShellZone, setAppShellZone } from "../stores/shell";
 import { openPlayer } from "../stores/player";
 import { getPlaybackProgress, playbackState } from "../lib/playbackStore";
+import {
+  isInWatchlist,
+  toggleWatchlistItem,
+  watchlistState,
+} from "../lib/watchlistStore";
 
 type Zone = "actions" | "seasons" | "episodes";
 const ZONES: Zone[] = ["actions", "seasons", "episodes"];
 
-const ACTIONS: { key: string; label: string }[] = [
-  { key: "watchlist", label: "+ Watchlist" },
-  { key: "back", label: "Back" },
-];
+type ActionKey = "watchlist" | "back";
 
 function fmtDuration(secs?: number | null): string | null {
   if (!secs || secs <= 0) return null;
@@ -184,6 +187,47 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
   });
   createEffect(() => setActive(appShellZone() === "content"));
 
+  // ---------------------------------------------------------------------------
+  // Watchlist
+  // ---------------------------------------------------------------------------
+
+  const watchlistItem = () => {
+    const s = series();
+    if (!s) return null;
+    return {
+      type: "series" as const,
+      id: s.id,
+      tmdb_id: s.tmdb_id ?? null,
+      title: s.name,
+      name: s.name,
+      logo: s.cover ?? null,
+      backdrop: s.backdrop_path ?? null,
+      plot: s.plot ?? null,
+      rating: s.rating_5based ?? null,
+      language: s.language ?? null,
+      year: s.release_date ? s.release_date.slice(0, 4) : null,
+      genres: s.genres ?? [],
+    };
+  };
+
+  const inWatchlist = createMemo<boolean>(() => {
+    watchlistState();
+    return isInWatchlist(watchlistItem());
+  });
+
+  function onToggleWatchlist() {
+    const item = watchlistItem();
+    if (item) toggleWatchlistItem(item);
+  }
+
+  const actions = createMemo<{ key: ActionKey; label: string }[]>(() => [
+    {
+      key: "watchlist",
+      label: inWatchlist() ? "✓ Watchlist" : "+ Watchlist",
+    },
+    { key: "back", label: "Back" },
+  ]);
+
   function moveVertical(delta: 1 | -1) {
     const idx = ZONES.indexOf(zone());
     const next = idx + delta;
@@ -199,7 +243,7 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
     const cur = zone();
     if (cur === "actions") {
       setActionIdx((i) =>
-        Math.min(Math.max(i + delta, 0), ACTIONS.length - 1),
+        Math.min(Math.max(i + delta, 0), actions().length - 1),
       );
       return;
     }
@@ -222,12 +266,11 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
   function activate() {
     const cur = zone();
     if (cur === "actions") {
-      const a = ACTIONS[actionIdx()];
+      const a = actions()[actionIdx()];
       if (!a) return;
       switch (a.key) {
         case "watchlist":
-          // eslint-disable-next-line no-console
-          console.info("[series-detail] watchlist toggle (deferred)");
+          onToggleWatchlist();
           break;
         case "back":
           close();
@@ -372,7 +415,7 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
 
                 {/* Action buttons */}
                 <div class="flex gap-3">
-                  <For each={ACTIONS}>
+                  <For each={actions()}>
                     {(action, i) => {
                       const focused = () =>
                         isScopeOwner() &&
@@ -502,8 +545,13 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
                             <Show
                               when={ep.movie_image}
                               fallback={
-                                <div class="absolute inset-0 flex items-center justify-center text-zinc-700 text-xl">
-                                  {epLabel(ep)}
+                                <div class="absolute inset-0 flex items-center justify-center">
+                                  <img
+                                    src={logoUrl}
+                                    alt=""
+                                    class="w-1/3 max-w-[72px] opacity-25"
+                                    draggable={false}
+                                  />
                                 </div>
                               }
                             >
@@ -513,15 +561,20 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
                                 loading="lazy"
                                 class="absolute inset-0 w-full h-full object-cover"
                               />
-                              <div class="absolute bottom-0 left-0 right-0 px-2 py-1 bg-gradient-to-t from-black/80 to-transparent text-xs text-zinc-200">
-                                {epLabel(ep)}
-                                <Show when={fmtDuration(ep.duration_secs)}>
-                                  <span class="ml-2 text-zinc-400">
-                                    · {fmtDuration(ep.duration_secs)}
-                                  </span>
-                                </Show>
-                              </div>
                             </Show>
+                            {/* Episode label + duration overlay always
+                                shows — regardless of whether the
+                                thumbnail loaded — so users can identify
+                                episodes that fell back to the logo
+                                placeholder. */}
+                            <div class="absolute bottom-0 left-0 right-0 px-2 py-1 bg-gradient-to-t from-black/80 to-transparent text-xs text-zinc-200">
+                              {epLabel(ep)}
+                              <Show when={fmtDuration(ep.duration_secs)}>
+                                <span class="ml-2 text-zinc-400">
+                                  · {fmtDuration(ep.duration_secs)}
+                                </span>
+                              </Show>
+                            </div>
                             {/* Resume-progress fill — thin red strip at
                                 the bottom of the thumbnail. The store
                                 only tracks one entry per series, so we
