@@ -58,7 +58,7 @@ export default function App() {
           <Route path="/home" component={Home} />
           <Route path="/movies" component={Movies} />
           <Route path="/series" component={Series} />
-          <Route path="/series/:id" component={SeriesDetail} />
+          <Route path="/series/:id" component={() => <SeriesDetail />} />
           <Route path="/live" component={Live} />
           <Route path="/search" component={Search} />
           <Route path="/profile" component={Profile} />

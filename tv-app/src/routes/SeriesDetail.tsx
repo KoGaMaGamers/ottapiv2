@@ -59,11 +59,33 @@ function epLabel(ep: EpisodeOut): string {
   return `${s}${e}`;
 }
 
-export default function SeriesDetail() {
+export interface SeriesDetailProps {
+  /**
+   * When provided, the component renders the given series id directly
+   * (used when Series.tsx mounts SeriesDetail as a popup overlay
+   * without navigating the route — keeps the listing's grid focus
+   * intact). When omitted, the id is read from the /series/:id route
+   * params (the dedicated-page entry path used by Search and direct
+   * URLs).
+   */
+  id?: number;
+  /**
+   * Called when the user closes the detail (Esc / Back / scrim click).
+   * When omitted, falls back to history.back() — the original
+   * dedicated-page behaviour.
+   */
+  onClose?: () => void;
+}
+
+export default function SeriesDetail(props: SeriesDetailProps = {}) {
   const params = useParams<{ id: string }>();
+  const close = () => {
+    if (props.onClose) props.onClose();
+    else history.back();
+  };
 
   const [series] = createResource(
-    () => Number(params.id),
+    () => props.id ?? Number(params.id),
     (id) => getSeries(id),
   );
 
@@ -90,7 +112,7 @@ export default function SeriesDetail() {
   const [episodes] = createResource(
     () => {
       const sn = activeSeason();
-      const sid = Number(params.id);
+      const sid = props.id ?? Number(params.id);
       if (sn === null) return null;
       return { sid, sn };
     },
@@ -170,7 +192,7 @@ export default function SeriesDetail() {
           console.info("[series-detail] watchlist toggle (deferred)");
           break;
         case "back":
-          history.back();
+          close();
           break;
       }
       return;

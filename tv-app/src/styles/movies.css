@@ -546,3 +546,22 @@
     box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 0 24px rgba(255, 255, 255, 0.28);
     transform: translateY(-1px);
 }
+
+/* Series detail rendered as a popup over the listing (Series.tsx).
+ * Fullscreen overlay so the listing's grid stays mounted underneath
+ * (preserves focus / scroll), but the detail design itself is the
+ * dedicated-page Tailwind layout — wrapper just provides positioning
+ * and opacity background.
+ */
+.sp-series-detail-popup {
+    position: fixed;
+    inset: 0;
+    z-index: 2400;
+    background: #0b0b0b;
+    overflow-y: auto;
+    animation: spDetailPopupIn 0.22s ease;
+}
+@keyframes spDetailPopupIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+}

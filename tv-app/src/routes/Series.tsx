@@ -31,7 +31,6 @@ import {
   Index,
   type JSX,
 } from "solid-js";
-import { useNavigate } from "@solidjs/router";
 import { listSeriesGenres, listSeries } from "../api/catalog";
 import type {
   GenreCountOut,
@@ -50,6 +49,7 @@ import Sidebar, { type SidebarItem } from "../components/Sidebar";
 import SeriesMediaCard from "../components/SeriesMediaCard";
 import SkeletonCard from "../components/SkeletonCard";
 import { type CardItem } from "../components/cardItem";
+import SeriesDetail from "./SeriesDetail";
 import {
   seriesSort,
   setSeriesSort,
@@ -167,7 +167,6 @@ function resolveCategoryIdsParam(): string | null | "" {
 // ---------------------------------------------------------------------------
 
 export default function Series(): JSX.Element {
-  const navigate = useNavigate();
   const { isScopeOwner } = useNavigationScope("page:series", {
     active: true,
     priority: 30,
@@ -220,6 +219,14 @@ export default function Series(): JSX.Element {
     [],
   );
   let featuredSet = false;
+
+  // Detail overlay — diagnostic per user request: open SeriesDetail as
+  // a fullscreen popup over Series.tsx instead of navigating to
+  // /series/:id, so the listing keeps its grid focus while the detail
+  // is visible (matches Movies' modal-style flow).
+  const [selectedSeriesId, setSelectedSeriesId] = createSignal<number | null>(
+    null,
+  );
 
   let gridRef: HTMLDivElement | undefined;
   let gridLoadMoreRef: HTMLDivElement | undefined;
@@ -468,8 +475,8 @@ export default function Series(): JSX.Element {
     return source.map((s) =>
       seriesToHero(
         s,
-        () => navigate(`/series/${s.id}`),
-        () => navigate(`/series/${s.id}`),
+        () => setSelectedSeriesId(s.id),
+        () => setSelectedSeriesId(s.id),
       ),
     );
   });
@@ -510,7 +517,7 @@ export default function Series(): JSX.Element {
           setAppShellZone("nav");
         } else if (e.key === "Enter") {
           const s = focusedGridSeries() ?? featuredSeries()[0];
-          if (s) navigate(`/series/${s.id}`);
+          if (s) setSelectedSeriesId(s.id);
         }
         return;
       }
@@ -582,7 +589,7 @@ export default function Series(): JSX.Element {
         }
       } else if (e.key === "Enter") {
         const s = genreSeries()[gridIdx()];
-        if (s) navigate(`/series/${s.id}`);
+        if (s) setSelectedSeriesId(s.id);
       } else if (e.key === "Escape" || e.key === "Backspace") {
         setZone("sidebar");
       }
@@ -675,7 +682,7 @@ export default function Series(): JSX.Element {
                     <SeriesMediaCard
                       item={seriesToCard(s)}
                       focused={zone() === "grid" && gridIdx() === i()}
-                      onClick={() => navigate(`/series/${s.id}`)}
+                      onClick={() => setSelectedSeriesId(s.id)}
                     />
                   )}
                 </For>
@@ -692,6 +699,17 @@ export default function Series(): JSX.Element {
           </Show>
         </div>
       </div>
+
+      {/* Series detail as a fullscreen popup over the listing — keeps
+          the grid mounted (and its focus) instead of a route change. */}
+      <Show when={selectedSeriesId() != null}>
+        <div class="sp-series-detail-popup">
+          <SeriesDetail
+            id={selectedSeriesId()!}
+            onClose={() => setSelectedSeriesId(null)}
+          />
+        </div>
+      </Show>
     </div>
   );
 }
