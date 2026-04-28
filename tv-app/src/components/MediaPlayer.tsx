@@ -55,6 +55,11 @@ import {
 import { useNavigationScope } from "../lib/navigation";
 import { useHeartbeat } from "../lib/heartbeat";
 import { listSubtitles, subtitleVttUrl } from "../api/subtitles";
+import {
+  getResumePositionSec,
+  savePlaybackProgress,
+  type PlaybackItem,
+} from "../lib/playbackStore";
 
 // Languages exposed in the CC menu. Backend fetches on demand
 // per-language, so showing the full set up-front is cheap (no upstream
@@ -78,6 +83,11 @@ type SubLangState =
   | { status: "loading" }
   | { status: "missing" }
   | { status: "loaded"; entry: SubtitleEntry };
+
+/** Don't bother resuming for sub-MIN_RESUME_SEC saves — feels weird. */
+const MIN_RESUME_SEC = 10;
+/** Wall-clock interval between automatic progress writes (matches legacy). */
+const PROGRESS_SAVE_INTERVAL_MS = 10_000;
 
 function fmtTime(s: number): string {
   if (!Number.isFinite(s) || s < 0) return "0:00";
@@ -152,6 +162,46 @@ function titleFor(open: PlayerOpen): { title: string; subtitle: string } {
   const e = String(ep.episode_num).padStart(2, "0");
   const subtitle = `S${s}E${e}${ep.title ? ` · ${ep.title}` : ""}`;
   return { title: open.series.name, subtitle };
+}
+
+/**
+ * Convert the player's open state into the loose item shape the
+ * playback store accepts. Live channels return null — we don't track
+ * resume position for live (no meaningful "where I was" semantics).
+ */
+function playbackItemFor(open: PlayerOpen): PlaybackItem | null {
+  if (open.kind === "movie") {
+    const m = open.movie;
+    return {
+      type: "movie",
+      id: m.id,
+      tmdb_id: m.tmdb_id,
+      title: m.name,
+      name: m.name,
+      logo: ("cover_big" in m ? m.cover_big : null) ?? m.stream_icon,
+      backdrop: m.backdrop_path,
+      year: m.year,
+      genres: m.genres,
+    };
+  }
+  if (open.kind === "episode") {
+    const s = open.series;
+    const ep = open.episode;
+    return {
+      type: "series",
+      _ottSeriesId: s.id,
+      id: ep.id,
+      tmdb_id: s.tmdb_id,
+      title: s.name,
+      name: s.name,
+      logo: s.cover,
+      backdrop: s.backdrop_path,
+      season: ep.season_number,
+      episode: ep.episode_num,
+      genres: s.genres,
+    };
+  }
+  return null;
 }
 
 async function allocateFor(open: PlayerOpen): Promise<PlayResponse> {
@@ -477,8 +527,32 @@ export default function MediaPlayer(): JSX.Element {
     });
   });
 
+  // ── Progress emission ───────────────────────────────────────────────
+  // Save the current position every 10s while playing. Final save with
+  // markCompleted: true on close — auto-removes the entry from the
+  // store when at-or-near the end (>=90% / <120s remaining).
+  const saveProgress = (final = false) => {
+    const item = playbackItemFor(cur());
+    if (!item || !videoRef) return;
+    savePlaybackProgress(item, {
+      positionSec: videoRef.currentTime || 0,
+      durationSec: videoRef.duration || duration() || 0,
+      markCompleted: final,
+    });
+  };
+  createEffect(() => {
+    if (isLive()) return;
+    if (!playing()) return;
+    const id = window.setInterval(
+      () => saveProgress(false),
+      PROGRESS_SAVE_INTERVAL_MS,
+    );
+    onCleanup(() => clearInterval(id));
+  });
+
   // ── Close + release ─────────────────────────────────────────────────
   const closeAndRelease = async () => {
+    saveProgress(true);
     const a = alloc();
     if (!releasedRef && a) {
       releasedRef = true;
@@ -493,6 +567,7 @@ export default function MediaPlayer(): JSX.Element {
   };
 
   onCleanup(() => {
+    saveProgress(false);
     if (hideTimer != null) clearTimeout(hideTimer);
     if (hls) {
       try {
@@ -514,7 +589,23 @@ export default function MediaPlayer(): JSX.Element {
 
   // ── Video element event wiring ──────────────────────────────────────
   const onLoadedMeta = () => {
-    if (videoRef) setDuration(videoRef.duration || 0);
+    if (!videoRef) return;
+    setDuration(videoRef.duration || 0);
+    // Resume from saved position if we have one and the user hasn't
+    // already nudged the playhead. Done here (not on play() call) so
+    // the duration is known and the seek lands cleanly. Live skipped
+    // — playbackItemFor returns null for live.
+    const item = playbackItemFor(cur());
+    if (item) {
+      const resume = getResumePositionSec(item);
+      if (resume > MIN_RESUME_SEC && videoRef.currentTime < 1) {
+        try {
+          videoRef.currentTime = resume;
+        } catch {
+          /* seek may fail if duration unknown — silent */
+        }
+      }
+    }
   };
   const onTimeUpdate = () => {
     if (videoRef) setCurrentTime(videoRef.currentTime || 0);

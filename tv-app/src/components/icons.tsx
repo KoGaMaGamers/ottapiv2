@@ -70,6 +70,18 @@ export function StarIcon(props: IconProps): JSX.Element {
   );
 }
 
+/** Clock circular arrow — Continue Watching. */
+export function ResumeIcon(props: IconProps): JSX.Element {
+  return svg(
+    props,
+    <>
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <polyline points="3 4 3 9 8 9" />
+      <polyline points="11 8 11 13 15 14" />
+    </>,
+  );
+}
+
 /** Tower — Live channels. */
 export function BroadcastIcon(props: IconProps): JSX.Element {
   return svg(

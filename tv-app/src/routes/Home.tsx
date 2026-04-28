@@ -46,7 +46,12 @@ import MovieMediaCard from "../components/MovieMediaCard";
 import SeriesMediaCard from "../components/SeriesMediaCard";
 import { type CardItem } from "../components/cardItem";
 import { openPlayer } from "../stores/player";
-import { FilmIcon, StarIcon, TvIcon } from "../components/icons";
+import { FilmIcon, ResumeIcon, StarIcon, TvIcon } from "../components/icons";
+import {
+  getContinueWatchingItems,
+  playbackState,
+  type ContinueItem,
+} from "../lib/playbackStore";
 
 // ---------------------------------------------------------------------------
 // Adapters: typed list items → UI shapes
@@ -225,10 +230,36 @@ interface HomeRow {
    *  consistent without relying on emoji sprites that look dated. */
   icon: JSX.Element;
   label: string;
-  variant: "movie" | "series";
+  /**
+   *   movie    — every card is a MovieListItem, opens player.
+   *   series   — every card is a SeriesListItem, navigates to detail.
+   *   continue — mixed; per-item dispatch via the carried PlaybackEntry
+   *              (movie → player, series → detail page).
+   */
+  variant: "movie" | "series" | "continue";
   items: CardItem[];
   showMore?: () => void;
-  raw: (MovieListItem | SeriesListItem)[];
+  raw: (MovieListItem | SeriesListItem | ContinueItem)[];
+}
+
+/** Map a Continue-Watching entry to a CardItem so the existing
+ *  Movie/Series media cards render it (progress bar comes for free
+ *  via the __progressPct / __resumeSec fields piggy-backed by
+ *  playbackStore.getContinueWatchingItems). */
+function continueToCard(entry: ContinueItem): CardItem {
+  return {
+    id: entry.id ?? entry.key,
+    title: entry.name,
+    name: entry.name,
+    poster: entry.logo,
+    backdrop: entry.backdrop,
+    year: entry.year,
+    genres: entry.genres,
+    type: entry.type === "series" ? "series" : "movie",
+    __progressPct: entry.__progressPct ?? undefined,
+    __resumeSec: entry.__resumeSec,
+    __durationSec: entry.__durationSec,
+  };
 }
 
 /**
@@ -319,9 +350,46 @@ export default function Home(): JSX.Element {
     latestMovies.error || topMovies.error || latestSeries.error;
 
   const resolveAndPlay = (
-    kind: "movie" | "series",
-    item: MovieListItem | SeriesListItem,
+    kind: "movie" | "series" | "continue",
+    item: MovieListItem | SeriesListItem | ContinueItem,
   ) => {
+    if (kind === "continue") {
+      const entry = item as ContinueItem;
+      if (entry.type === "movie") {
+        // Reconstruct enough of MovieListItem for the player's
+        // playMovie call — only `id` is hard-required by the play
+        // endpoint; the rest improves the player's title/poster.
+        const movieId = Number(entry.id);
+        if (!Number.isFinite(movieId)) return;
+        openPlayer({
+          kind: "movie",
+          movie: {
+            id: movieId,
+            name: entry.name,
+            year: typeof entry.year === "number" ? entry.year : null,
+            language: null,
+            rating_5based: null,
+            cover_big: entry.logo,
+            stream_icon: entry.logo,
+            backdrop_path: entry.backdrop,
+            tmdb_id:
+              entry.tmdb_id != null ? Number(entry.tmdb_id) : null,
+            o_language: null,
+            tmdb_vote_average: null,
+            tmdb_popularity: null,
+            duration_secs: null,
+            added: null,
+            genres: entry.genres,
+          } as MovieListItem,
+        });
+      } else if (entry._ottSeriesId != null) {
+        // Navigate to the series detail page; the SeriesDetail
+        // popup auto-resumes via getResumePositionSec when the user
+        // hits Play on the same season+episode.
+        navigate(`/series/${entry._ottSeriesId}`);
+      }
+      return;
+    }
     if (kind === "movie") {
       openPlayer({ kind: "movie", movie: item as MovieListItem });
     } else {
@@ -346,10 +414,28 @@ export default function Home(): JSX.Element {
   );
 
   const rows = createMemo<HomeRow[]>(() => {
+    // Read playbackState() for reactive tracking — store updates after
+    // the player saves progress trigger a re-render of this memo, so
+    // the Continue Watching row reflects the latest position without
+    // a manual refresh.
+    playbackState();
     const r: HomeRow[] = [];
     const lm = latestMovies() ?? [];
     const ls = latestSeries() ?? [];
     const tm = topMovies() ?? [];
+
+    const continueItems = getContinueWatchingItems(20);
+    if (continueItems.length > 0) {
+      r.push({
+        id: "continue",
+        icon: <ResumeIcon />,
+        label: "Continue Watching",
+        variant: "continue",
+        items: continueItems.map(continueToCard),
+        raw: continueItems,
+      });
+    }
+
     if (lm.length > 0) {
       r.push({
         id: "latestMovies",
@@ -538,7 +624,7 @@ function ContentRow(props: {
   row: HomeRow;
   isFocusedRow: boolean;
   focusedCol: number;
-  onPlay: (item: MovieListItem | SeriesListItem) => void;
+  onPlay: (item: MovieListItem | SeriesListItem | ContinueItem) => void;
 }): JSX.Element {
   let trackRef: HTMLDivElement | undefined;
   let rowRef: HTMLDivElement | undefined;
@@ -587,9 +673,22 @@ function ContentRow(props: {
             {(item, colIndex) => {
               const focused = () =>
                 props.isFocusedRow && props.focusedCol === colIndex();
+              // Pick a card silhouette per-item: pure rows use the row
+              // variant, but Continue Watching mixes movie + series so
+              // we read item.type. Series posters are 2:3 portrait,
+              // movies are 16:9 landscape — using the right one keeps
+              // the row visually coherent with the rest of Home.
+              const cardKind = (): "movie" | "series" =>
+                props.row.variant === "series"
+                  ? "series"
+                  : props.row.variant === "movie"
+                    ? "movie"
+                    : item.type === "series"
+                      ? "series"
+                      : "movie";
               return (
                 <Show
-                  when={props.row.variant === "series"}
+                  when={cardKind() === "series"}
                   fallback={
                     <MovieMediaCard
                       item={item}
