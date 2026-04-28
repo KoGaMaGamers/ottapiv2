@@ -89,8 +89,8 @@ function fmtTime(s: number): string {
     : `${m}:${String(sec).padStart(2, "0")}`;
 }
 
-type FocusZone = "none" | "seekBar" | "buttons" | "subMenu";
-type FocusedButton = "skipBack" | "play" | "skipFwd" | "cc";
+type FocusZone = "none" | "seekBar" | "buttons" | "subMenu" | "audioMenu";
+type FocusedButton = "skipBack" | "play" | "skipFwd" | "audio" | "cc";
 
 interface Allocation {
   stream_url: string;
@@ -206,6 +206,29 @@ export default function MediaPlayer(): JSX.Element {
     return null;
   });
 
+  // ── Embedded HLS tracks (audio + subtitle, populated by hls.js events).
+  // For native HLS playback (Safari) the browser surfaces these via
+  // videoEl.audioTracks / textTracks instead — we ignore that path for
+  // now since hls.js covers all non-Safari browsers.
+  interface AudioTrack {
+    id: number;
+    name: string;
+    lang: string;
+  }
+  interface EmbeddedSubTrack {
+    id: number;
+    name: string;
+    lang: string;
+  }
+  const [audioTracks, setAudioTracks] = createSignal<AudioTrack[]>([]);
+  const [activeAudioId, setActiveAudioId] = createSignal<number | null>(null);
+  const [embeddedSubs, setEmbeddedSubs] = createSignal<EmbeddedSubTrack[]>([]);
+  const [activeEmbeddedSubId, setActiveEmbeddedSubId] = createSignal<
+    number | null
+  >(null);
+  const [bufferedPct, setBufferedPct] = createSignal(0);
+  const [audioMenuIdx, setAudioMenuIdx] = createSignal(0);
+
   let videoRef: HTMLVideoElement | undefined;
   let hls: Hls | null = null;
   let hideTimer: number | null = null;
@@ -255,6 +278,12 @@ export default function MediaPlayer(): JSX.Element {
     const looksHls = /\.m3u8(\?|$)/i.test(url);
     const canNative = videoRef.canPlayType("application/vnd.apple.mpegurl");
 
+    // Reset embedded-track state on every source switch (channel zap, etc.)
+    setAudioTracks([]);
+    setActiveAudioId(null);
+    setEmbeddedSubs([]);
+    setActiveEmbeddedSubId(null);
+
     if (looksHls && Hls.isSupported() && !canNative) {
       hls = new Hls({ maxBufferLength: 30 });
       hls.loadSource(url);
@@ -270,6 +299,37 @@ export default function MediaPlayer(): JSX.Element {
           console.warn("[player] HLS fatal error:", data);
         }
       });
+      // Audio + subtitle track discovery — populated as the manifest
+      // is parsed. Mirrors what ExoPlayer surfaces natively in the
+      // Android overlay; here we expose the same picker UI in JS.
+      const refreshAudio = () => {
+        if (!hls) return;
+        setAudioTracks(
+          hls.audioTracks.map((t) => ({
+            id: t.id,
+            name: t.name || t.lang || `Track ${t.id + 1}`,
+            lang: t.lang || "",
+          })),
+        );
+        setActiveAudioId(hls.audioTrack);
+      };
+      const refreshSubs = () => {
+        if (!hls) return;
+        setEmbeddedSubs(
+          hls.subtitleTracks.map((t) => ({
+            id: t.id,
+            name: t.name || t.lang || `Subtitle ${t.id + 1}`,
+            lang: t.lang || "",
+          })),
+        );
+        setActiveEmbeddedSubId(
+          hls.subtitleTrack >= 0 ? hls.subtitleTrack : null,
+        );
+      };
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, refreshAudio);
+      hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, refreshAudio);
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, refreshSubs);
+      hls.on(Hls.Events.SUBTITLE_TRACK_SWITCH, refreshSubs);
     } else {
       videoRef.src = url;
       videoRef.play().catch(() => {
@@ -365,6 +425,11 @@ export default function MediaPlayer(): JSX.Element {
   };
 
   const selectSubtitle = async (lang: string | null) => {
+    // Picking a SUBDL lang implies turning off any in-band HLS sub.
+    if (hls && hls.subtitleTrack >= 0) {
+      hls.subtitleTrack = -1;
+      setActiveEmbeddedSubId(null);
+    }
     if (lang == null) {
       setActiveSubId(null);
       return;
@@ -377,6 +442,20 @@ export default function MediaPlayer(): JSX.Element {
     if (st?.status === "loaded") {
       setActiveSubId(st.entry.id);
     }
+  };
+
+  const selectEmbeddedSub = (id: number | null) => {
+    if (!hls) return;
+    // Picking an in-band track implies dropping any external SUBDL.
+    setActiveSubId(null);
+    hls.subtitleTrack = id ?? -1;
+    setActiveEmbeddedSubId(id);
+  };
+
+  const selectAudioTrack = (id: number) => {
+    if (!hls) return;
+    hls.audioTrack = id;
+    setActiveAudioId(id);
   };
 
   // Activate the matching textTrack on the <video> when the active
@@ -440,6 +519,20 @@ export default function MediaPlayer(): JSX.Element {
   const onTimeUpdate = () => {
     if (videoRef) setCurrentTime(videoRef.currentTime || 0);
   };
+  const onProgress = () => {
+    // Update the buffered-fill chunk on the seek bar. Always uses the
+    // last buffered range so the indicator matches the bar's right edge
+    // when the player has buffered ahead.
+    if (!videoRef) return;
+    const d = videoRef.duration || 0;
+    const ranges = videoRef.buffered;
+    if (!d || ranges.length === 0) {
+      setBufferedPct(0);
+      return;
+    }
+    const end = ranges.end(ranges.length - 1);
+    setBufferedPct(Math.min(1, end / d));
+  };
   const onPlayEvt = () => {
     setPlaying(true);
     setBuffering(false);
@@ -467,11 +560,16 @@ export default function MediaPlayer(): JSX.Element {
       e.stopPropagation();
 
       if (e.key === "Escape" || e.key === "Backspace") {
-        // If the CC menu is open, dismiss it instead of closing the
+        // If a submenu is open, dismiss it instead of closing the
         // whole player — same back-out semantics as any nested overlay.
         if (zone() === "subMenu") {
           setZone("buttons");
           setFocusedBtn("cc");
+          return;
+        }
+        if (zone() === "audioMenu") {
+          setZone("buttons");
+          setFocusedBtn("audio");
           return;
         }
         closeAndRelease();
@@ -522,13 +620,13 @@ export default function MediaPlayer(): JSX.Element {
         }
       }
       if (z === "buttons") {
-        // Button order on the row: skipBack ← play → skipFwd → cc.
-        // CC only available for content with subtitle context (movie /
-        // episode with tmdb_id) — live and missing-tmdb items still
-        // get the 3-button row.
-        const order: FocusedButton[] = subContext()
-          ? ["skipBack", "play", "skipFwd", "cc"]
-          : ["skipBack", "play", "skipFwd"];
+        // Button order: skipBack ← play → skipFwd → [audio if >1 track] → cc.
+        // CC available when the content has a tmdb_id (movie / episode).
+        // AUDIO available when the stream exposes more than one audio
+        // track (HLS multi-audio).
+        const order: FocusedButton[] = ["skipBack", "play", "skipFwd"];
+        if (audioTracks().length > 1) order.push("audio");
+        if (subContext() || embeddedSubs().length > 0) order.push("cc");
         const idx = order.indexOf(focusedBtn());
         if (e.key === "ArrowLeft") {
           if (idx > 0) setFocusedBtn(order[idx - 1]);
@@ -546,20 +644,37 @@ export default function MediaPlayer(): JSX.Element {
           else if (b === "skipFwd") seekBy(10);
           else if (b === "cc") {
             setZone("subMenu");
-            // 0 = Off, 1+ = SUB_LANGS index. Try to land on the active
-            // entry so re-opening the menu re-selects what's currently
-            // showing.
+            // Land on the currently active entry: external SUBDL → its
+            // index in the SUBDL section; embedded HLS → its index in
+            // the embedded section; otherwise Off.
             const active = activeSubEntry();
-            const langIdx = active
-              ? SUB_LANGS.findIndex((l) => l.code === active.lang)
-              : -1;
-            setSubMenuIdx(langIdx >= 0 ? langIdx + 1 : 0);
+            const embIdx = activeEmbeddedSubId();
+            if (active) {
+              const langIdx = SUB_LANGS.findIndex(
+                (l) => l.code === active.lang,
+              );
+              setSubMenuIdx(
+                langIdx >= 0
+                  ? 1 + embeddedSubs().length + langIdx
+                  : 0,
+              );
+            } else if (embIdx != null) {
+              const i = embeddedSubs().findIndex((t) => t.id === embIdx);
+              setSubMenuIdx(i >= 0 ? 1 + i : 0);
+            } else {
+              setSubMenuIdx(0);
+            }
+          } else if (b === "audio") {
+            setZone("audioMenu");
+            const active = activeAudioId();
+            const i = audioTracks().findIndex((t) => t.id === active);
+            setAudioMenuIdx(i >= 0 ? i : 0);
           } else togglePlay();
           return;
         }
       }
       if (z === "subMenu") {
-        const total = SUB_LANGS.length + 1; // 0 = Off
+        const total = 1 + embeddedSubs().length + SUB_LANGS.length;
         if (e.key === "ArrowDown") {
           setSubMenuIdx((i) => Math.min(i + 1, total - 1));
           return;
@@ -570,10 +685,14 @@ export default function MediaPlayer(): JSX.Element {
         }
         if (e.key === "Enter") {
           const i = subMenuIdx();
+          const eCount = embeddedSubs().length;
           if (i === 0) {
             selectSubtitle(null);
+            selectEmbeddedSub(null);
+          } else if (i <= eCount) {
+            selectEmbeddedSub(embeddedSubs()[i - 1].id);
           } else {
-            const lang = SUB_LANGS[i - 1]?.code;
+            const lang = SUB_LANGS[i - 1 - eCount]?.code;
             if (lang) selectSubtitle(lang);
           }
           setZone("buttons");
@@ -581,8 +700,27 @@ export default function MediaPlayer(): JSX.Element {
           return;
         }
         if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-          // Trap horizontal nav inside the menu so the buttons row
-          // doesn't move underneath.
+          return;
+        }
+      }
+      if (z === "audioMenu") {
+        const total = audioTracks().length;
+        if (e.key === "ArrowDown") {
+          setAudioMenuIdx((i) => Math.min(i + 1, total - 1));
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          setAudioMenuIdx((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (e.key === "Enter") {
+          const t = audioTracks()[audioMenuIdx()];
+          if (t) selectAudioTrack(t.id);
+          setZone("buttons");
+          setFocusedBtn("audio");
+          return;
+        }
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
           return;
         }
       }
@@ -612,6 +750,7 @@ export default function MediaPlayer(): JSX.Element {
         playsinline
         onLoadedMetadata={onLoadedMeta}
         onTimeUpdate={onTimeUpdate}
+        onProgress={onProgress}
         onPlay={onPlayEvt}
         onPause={onPauseEvt}
         onWaiting={onWaiting}
@@ -672,6 +811,10 @@ export default function MediaPlayer(): JSX.Element {
               class={`mp-seek-wrap ${zone() === "seekBar" ? "mp-seek-focused" : ""}`}
             >
               <div class="mp-buf-track">
+                <div
+                  class="mp-buf-fill"
+                  style={{ width: `${bufferedPct() * 100}%` }}
+                />
                 <div
                   class="mp-played-fill"
                   style={{ width: `${pct() * 100}%` }}
@@ -780,10 +923,80 @@ export default function MediaPlayer(): JSX.Element {
               </Show>
             </div>
             <div class="mp-ctrl-side mp-ctrl-right">
-              <Show when={subContext()}>
+              {/* AUDIO button — only when the stream exposes >1 audio track */}
+              <Show when={audioTracks().length > 1}>
                 <div class="mp-menu-wrap">
                   <button
-                    class={`mp-btn mp-cc-btn${activeSubEntry() ? " mp-btn--active" : ""}${
+                    class={`mp-btn mp-cc-btn${activeAudioId() != null ? " mp-btn--active" : ""}${
+                      zone() === "buttons" && focusedBtn() === "audio"
+                        ? " mp-btn--remote-focus"
+                        : ""
+                    }`}
+                    onClick={() => {
+                      setZone("audioMenu");
+                      setFocusedBtn("audio");
+                      const i = audioTracks().findIndex(
+                        (t) => t.id === activeAudioId(),
+                      );
+                      setAudioMenuIdx(i >= 0 ? i : 0);
+                    }}
+                  >
+                    <span class="mp-btn-label">AUDIO</span>
+                  </button>
+
+                  <Show when={zone() === "audioMenu"}>
+                    <div class="mp-menu">
+                      <div class="mp-menu-header">
+                        Audio
+                        <span class="mp-menu-hint">
+                          {" "}↑↓ navigate · Enter select · ← back
+                        </span>
+                      </div>
+                      <For each={audioTracks()}>
+                        {(track, i) => {
+                          const isActive = () => track.id === activeAudioId();
+                          const isFocused = () => audioMenuIdx() === i();
+                          return (
+                            <button
+                              class={`mp-menu-item${
+                                isActive() ? " mp-menu-item--active" : ""
+                              }${
+                                isFocused() ? " mp-menu-item--kbfocus" : ""
+                              }`}
+                              onClick={() => {
+                                selectAudioTrack(track.id);
+                                setZone("buttons");
+                                setFocusedBtn("audio");
+                              }}
+                            >
+                              <span class="mp-menu-item-label">
+                                {track.name}
+                                <Show when={track.lang}>
+                                  <span style={{ opacity: 0.55 }}>
+                                    {" "}· {track.lang}
+                                  </span>
+                                </Show>
+                              </span>
+                              <Show when={isActive()}>
+                                <span class="mp-sub-badge mp-sub-badge--on">
+                                  ✓
+                                </span>
+                              </Show>
+                            </button>
+                          );
+                        }}
+                      </For>
+                    </div>
+                  </Show>
+                </div>
+              </Show>
+
+              {/* CC button — visible when there's a subtitle source: either
+                  a tmdb_id (so SUBDL can search) or in-band HLS subs. */}
+              <Show when={subContext() || embeddedSubs().length > 0}>
+                <div class="mp-menu-wrap">
+                  <button
+                    class={`mp-btn mp-cc-btn${activeSubEntry() || activeEmbeddedSubId() != null ? " mp-btn--active" : ""}${
                       zone() === "buttons" && focusedBtn() === "cc"
                         ? " mp-btn--remote-focus"
                         : ""
@@ -792,10 +1005,24 @@ export default function MediaPlayer(): JSX.Element {
                       setZone("subMenu");
                       setFocusedBtn("cc");
                       const active = activeSubEntry();
-                      const langIdx = active
-                        ? SUB_LANGS.findIndex((l) => l.code === active.lang)
-                        : -1;
-                      setSubMenuIdx(langIdx >= 0 ? langIdx + 1 : 0);
+                      const embId = activeEmbeddedSubId();
+                      if (active) {
+                        const langIdx = SUB_LANGS.findIndex(
+                          (l) => l.code === active.lang,
+                        );
+                        setSubMenuIdx(
+                          langIdx >= 0
+                            ? 1 + embeddedSubs().length + langIdx
+                            : 0,
+                        );
+                      } else if (embId != null) {
+                        const i = embeddedSubs().findIndex(
+                          (t) => t.id === embId,
+                        );
+                        setSubMenuIdx(i >= 0 ? 1 + i : 0);
+                      } else {
+                        setSubMenuIdx(0);
+                      }
                     }}
                   >
                     <svg
@@ -807,7 +1034,9 @@ export default function MediaPlayer(): JSX.Element {
                       <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-10 7H8v-1H6v4h2v-1h2v1c0 .55-.45 1-1 1H5c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h5c.55 0 1 .45 1 1v1zm9 0h-2v-1h-2v4h2v-1h2v1c0 .55-.45 1-1 1h-5c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h5c.55 0 1 .45 1 1v1z" />
                     </svg>
                     <span class="mp-btn-label">
-                      {activeSubEntry() ? "CC ✓" : "CC"}
+                      {activeSubEntry() || activeEmbeddedSubId() != null
+                        ? "CC ✓"
+                        : "CC"}
                     </span>
                   </button>
 
@@ -822,10 +1051,13 @@ export default function MediaPlayer(): JSX.Element {
 
                       <button
                         class={`mp-menu-item${
-                          !activeSubEntry() ? " mp-menu-item--active" : ""
+                          !activeSubEntry() && activeEmbeddedSubId() == null
+                            ? " mp-menu-item--active"
+                            : ""
                         }${subMenuIdx() === 0 ? " mp-menu-item--kbfocus" : ""}`}
                         onClick={() => {
                           selectSubtitle(null);
+                          selectEmbeddedSub(null);
                           setZone("buttons");
                           setFocusedBtn("cc");
                         }}
@@ -833,52 +1065,95 @@ export default function MediaPlayer(): JSX.Element {
                         <span class="mp-menu-item-label">Off</span>
                       </button>
 
-                      <For each={SUB_LANGS}>
-                        {(lang, i) => {
-                          const state = () =>
-                            subLangState()[lang.code] ?? { status: "idle" };
-                          const isActive = () =>
-                            activeSubEntry()?.lang === lang.code;
-                          const isMissing = () =>
-                            state().status === "missing";
-                          const isLoading = () =>
-                            state().status === "loading";
-                          const isFocused = () => subMenuIdx() === i() + 1;
-                          return (
-                            <button
-                              class={`mp-menu-item${
-                                isActive() ? " mp-menu-item--active" : ""
-                              }${isMissing() ? " mp-menu-item--missing" : ""}${
-                                isFocused() ? " mp-menu-item--kbfocus" : ""
-                              }`}
-                              onClick={() => {
-                                selectSubtitle(lang.code);
-                                setZone("buttons");
-                                setFocusedBtn("cc");
-                              }}
-                            >
-                              <span class="mp-menu-item-label">
-                                {lang.label}
-                              </span>
-                              <Show when={isLoading()}>
-                                <span class="mp-sub-spin" />
-                              </Show>
-                              <Show when={isMissing()}>
-                                <span class="mp-sub-badge mp-sub-badge--na">
-                                  ✗
-                                </span>
-                              </Show>
-                              <Show
-                                when={isActive() && !isLoading() && !isMissing()}
+                      {/* In-band tracks first — these come for free with
+                          the stream and don't need a SUBDL roundtrip. */}
+                      <Show when={embeddedSubs().length > 0}>
+                        <div class="mp-menu-section-header">Stream tracks</div>
+                        <For each={embeddedSubs()}>
+                          {(track, i) => {
+                            const isActive = () =>
+                              activeEmbeddedSubId() === track.id;
+                            const isFocused = () => subMenuIdx() === 1 + i();
+                            return (
+                              <button
+                                class={`mp-menu-item${
+                                  isActive() ? " mp-menu-item--active" : ""
+                                }${
+                                  isFocused() ? " mp-menu-item--kbfocus" : ""
+                                }`}
+                                onClick={() => {
+                                  selectEmbeddedSub(track.id);
+                                  setZone("buttons");
+                                  setFocusedBtn("cc");
+                                }}
                               >
-                                <span class="mp-sub-badge mp-sub-badge--on">
-                                  ✓
+                                <span class="mp-menu-item-label">
+                                  {track.name}
                                 </span>
-                              </Show>
-                            </button>
-                          );
-                        }}
-                      </For>
+                                <Show when={isActive()}>
+                                  <span class="mp-sub-badge mp-sub-badge--on">
+                                    ✓
+                                  </span>
+                                </Show>
+                              </button>
+                            );
+                          }}
+                        </For>
+                      </Show>
+
+                      <Show when={subContext()}>
+                        <div class="mp-menu-section-header">Languages</div>
+                        <For each={SUB_LANGS}>
+                          {(lang, i) => {
+                            const state = () =>
+                              subLangState()[lang.code] ?? { status: "idle" };
+                            const isActive = () =>
+                              activeSubEntry()?.lang === lang.code;
+                            const isMissing = () =>
+                              state().status === "missing";
+                            const isLoading = () =>
+                              state().status === "loading";
+                            const isFocused = () =>
+                              subMenuIdx() ===
+                              1 + embeddedSubs().length + i();
+                            return (
+                              <button
+                                class={`mp-menu-item${
+                                  isActive() ? " mp-menu-item--active" : ""
+                                }${isMissing() ? " mp-menu-item--missing" : ""}${
+                                  isFocused() ? " mp-menu-item--kbfocus" : ""
+                                }`}
+                                onClick={() => {
+                                  selectSubtitle(lang.code);
+                                  setZone("buttons");
+                                  setFocusedBtn("cc");
+                                }}
+                              >
+                                <span class="mp-menu-item-label">
+                                  {lang.label}
+                                </span>
+                                <Show when={isLoading()}>
+                                  <span class="mp-sub-spin" />
+                                </Show>
+                                <Show when={isMissing()}>
+                                  <span class="mp-sub-badge mp-sub-badge--na">
+                                    ✗
+                                  </span>
+                                </Show>
+                                <Show
+                                  when={
+                                    isActive() && !isLoading() && !isMissing()
+                                  }
+                                >
+                                  <span class="mp-sub-badge mp-sub-badge--on">
+                                    ✓
+                                  </span>
+                                </Show>
+                              </button>
+                            );
+                          }}
+                        </For>
+                      </Show>
                     </div>
                   </Show>
                 </div>
