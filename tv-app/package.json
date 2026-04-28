@@ -6,15 +6,23 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "tauri:android:init": "tauri android init",
+    "tauri:android:dev": "tauri android dev",
+    "tauri:android:build": "tauri android build"
   },
   "dependencies": {
     "@solidjs/router": "^0.16.1",
+    "@tauri-apps/api": "^2",
     "hls.js": "^1.6.16",
     "solid-js": "^1.9.12"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.4",
+    "@tauri-apps/cli": "^2",
     "@types/node": "^24.12.2",
     "tailwindcss": "^4.2.4",
     "typescript": "~6.0.2",
