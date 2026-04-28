@@ -35,11 +35,15 @@ export default function SortSelector<T extends string>(props: SortSelectorProps<
           return (
             <button
               onClick={() => props.onChange(opt.value)}
-              class={`px-3 py-1 rounded-full text-xs font-medium transition-colors outline-none ${
+              class={`px-3 py-1 rounded-full text-xs font-medium transition-all outline-none ${
                 isActive()
                   ? "bg-violet-600/30 text-violet-200 ring-1 ring-violet-500"
                   : "bg-zinc-900 text-zinc-400 ring-1 ring-zinc-800 hover:text-zinc-200"
-              } ${focused() ? "ring-2 ring-violet-300" : ""}`}
+              } ${
+                focused()
+                  ? "ring-2 ring-white scale-110 shadow-[0_0_18px_rgba(255,255,255,0.45)] z-10 relative"
+                  : ""
+              }`}
             >
               {opt.label}
             </button>
