@@ -148,6 +148,55 @@
 
 .hp-footer-spacer { height: 60px; }
 
+/* ── Home hero variant — full-bleed backdrop instead of right-side poster
+ *
+ * The legacy Home page used the default `.hp-hero` layout (portrait poster
+ * anchored right, left-to-right gradient hiding the left half), but the
+ * user prefers the Movies/Series look — full-bleed backdrop with text
+ * over a darker left edge. Mirrors the cascade defined for
+ * `.sp-browser .hp-hero.sp-browser-hero.mp-browser-hero` in hero.css,
+ * scoped under `.home-page` so it doesn't bleed back into the modal /
+ * Movies / Series shells.
+ * ─────────────────────────────────────────────────────────────────────── */
+.home-page .hp-hero-bg {
+    position: absolute;
+    inset: 0;
+}
+.home-page .sp-hero-backdrop {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center 25%;
+    opacity: 0.72;
+    filter: brightness(0.78);
+}
+.home-page .hp-hero-bg.active .sp-hero-backdrop {
+    opacity: 0.8;
+}
+.home-page .hp-hero-poster {
+    display: none;
+}
+.home-page .hp-hero-overlay {
+    background:
+        linear-gradient(
+            90deg,
+            rgba(8, 8, 8, 0.98) 0%,
+            rgba(8, 8, 8, 0.74) 30%,
+            rgba(8, 8, 8, 0.34) 52%,
+            rgba(8, 8, 8, 0.06) 72%,
+            transparent 88%
+        ),
+        linear-gradient(
+            to top,
+            rgba(8, 8, 8, 0.98) 0%,
+            rgba(8, 8, 8, 0.68) 30%,
+            rgba(8, 8, 8, 0.2) 56%,
+            transparent 76%
+        );
+}
+
 /* ── Per-row card sizing (App.css 5069–5111) ─────────────────────────────── */
 .home-page .hp-row-scroll {
     padding-top: 28px !important;

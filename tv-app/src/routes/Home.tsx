@@ -113,7 +113,9 @@ function movieToHero(
     id: `m-${m.id}`,
     title: m.name,
     poster: m.cover_big ?? m.stream_icon,
-    backdrop: m.backdrop_path,
+    // Prefer the wide TMDB backdrop; fall back to the portrait cover so
+    // movies missing TMDB enrichment still cover the full hero.
+    backdrop: m.backdrop_path ?? m.cover_big ?? m.stream_icon,
     gradient: getGradient(m.name),
     accent: getAccent(m.name),
     badges,
@@ -146,7 +148,9 @@ function seriesToHero(
     id: `s-${s.id}`,
     title: s.name,
     poster: s.cover,
-    backdrop: s.backdrop_path,
+    // Same fallback as movieToHero — keep the hero covered when the
+    // series doesn't have a wide TMDB backdrop yet.
+    backdrop: s.backdrop_path ?? s.cover,
     gradient: getGradient(s.name),
     accent: getAccent(s.name),
     badges,
