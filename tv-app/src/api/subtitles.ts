@@ -36,13 +36,19 @@ export function listSubtitles(opts: ListSubtitlesOpts): Promise<SubtitleEntry[]>
 }
 
 /**
- * The backend returns a `url_vtt` field on each SubtitleEntry that may be
- * absolute (when called from a deployed frontend) or relative (when called
- * via the Vite dev proxy). Use this helper to coerce to the right shape.
+ * Same-origin URL for the player's <track> element. Browsers refuse to
+ * load cross-origin VTT into a <track> unless the video element is in
+ * CORS mode — and putting the video into CORS mode makes the provider
+ * stream URLs (which don't send CORS headers) fail to play. So we
+ * always return a relative path that resolves through the Vite dev
+ * proxy (same-origin) and against VITE_API_BASE in prod.
+ *
+ * The backend's `entry.url_vtt` is an absolute URL built from
+ * request.base_url; we ignore it here and construct the well-known
+ * path from `entry.id` instead.
  */
 export function subtitleVttUrl(entry: SubtitleEntry): string {
+  const path = `/api/v1/subtitles/${entry.id}`;
   const base = (import.meta.env.VITE_API_BASE as string | undefined) ?? "";
-  if (entry.url_vtt.startsWith("http")) return entry.url_vtt;
-  if (!base) return entry.url_vtt;
-  return base.replace(/\/+$/, "") + entry.url_vtt;
+  return base ? base.replace(/\/+$/, "") + path : path;
 }

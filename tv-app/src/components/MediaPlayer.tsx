@@ -610,7 +610,6 @@ export default function MediaPlayer(): JSX.Element {
         class="mp-video"
         autoplay
         playsinline
-        crossorigin="anonymous"
         onLoadedMetadata={onLoadedMeta}
         onTimeUpdate={onTimeUpdate}
         onPlay={onPlayEvt}
