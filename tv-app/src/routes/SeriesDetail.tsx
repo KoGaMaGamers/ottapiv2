@@ -34,7 +34,7 @@ import { useParams } from "@solidjs/router";
 import { getSeasonEpisodes, getSeries } from "../api/catalog";
 import type { EpisodeOut, SeasonOut } from "../api/types";
 import { useNavigationScope } from "../lib/navigation";
-import { isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
+import { isBackKey, isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
 import { appShellZone, setAppShellZone } from "../stores/shell";
 import { openPlayer } from "../stores/player";
 
@@ -140,6 +140,43 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
     return Math.max(seasons().findIndex((s) => s.season_number === sn), 0);
   });
 
+  // ---------------------------------------------------------------------------
+  // Hero copy follows the currently selected episode
+  // ---------------------------------------------------------------------------
+  // The episode rail defaults to index 0 once the season's episodes load,
+  // so the hero is "always showing the selected episode" — title + plot
+  // swap to the focused episode while series-level metadata (badges, year,
+  // genres, director, cast, action buttons) stays put.
+
+  const focusedEpisode = createMemo<EpisodeOut | null>(() => {
+    const eps = episodes();
+    if (!eps || eps.length === 0) return null;
+    return eps[episodeIdx()] ?? null;
+  });
+
+  const heroTitle = createMemo<string>(() => {
+    const ep = focusedEpisode();
+    if (ep) return ep.title ?? `Episode ${ep.episode_num}`;
+    return series()?.name ?? "";
+  });
+
+  // Subtitle line: shows "S0xE0y · <series name>" when an episode is
+  // focused so the user keeps the series context; falls back to the
+  // series original name (italic) when no episodes are loaded yet.
+  const heroSubtitle = createMemo<string | null>(() => {
+    const ep = focusedEpisode();
+    const s = series();
+    if (ep && s) return `${epLabel(ep)} · ${s.name}`;
+    if (s?.o_name && s.o_name !== s.name) return s.o_name;
+    return null;
+  });
+
+  const heroPlot = createMemo<string | null>(() => {
+    const ep = focusedEpisode();
+    if (ep?.plot) return ep.plot;
+    return series()?.plot ?? null;
+  });
+
   const { isScopeOwner, setActive } = useNavigationScope("series-detail", {
     priority: 30,
     active: appShellZone() === "content",
@@ -214,6 +251,11 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
 
   function onKey(e: KeyboardEvent) {
     if (!isScopeOwner()) return;
+    if (isBackKey(e.key)) {
+      e.preventDefault();
+      close();
+      return;
+    }
     if (!isDirectionalKey(e.key) && !isSelectKey(e.key)) return;
     e.preventDefault();
     switch (e.key) {
@@ -277,9 +319,9 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
               </Show>
 
               <div class="flex-1 min-w-0">
-                <h1 class="text-4xl font-semibold mb-2">{s.name}</h1>
-                <Show when={s.o_name && s.o_name !== s.name}>
-                  <p class="text-zinc-500 mb-3 italic">{s.o_name}</p>
+                <h1 class="text-4xl font-semibold mb-2">{heroTitle()}</h1>
+                <Show when={heroSubtitle()}>
+                  <p class="text-zinc-500 mb-3 italic">{heroSubtitle()}</p>
                 </Show>
 
                 <div class="flex gap-3 text-sm text-zinc-400 mb-4">
@@ -308,9 +350,9 @@ export default function SeriesDetail(props: SeriesDetailProps = {}) {
                   </div>
                 </Show>
 
-                <Show when={s.plot}>
+                <Show when={heroPlot()}>
                   <p class="text-zinc-300 leading-relaxed mb-6 max-w-3xl">
-                    {s.plot}
+                    {heroPlot()}
                   </p>
                 </Show>
 

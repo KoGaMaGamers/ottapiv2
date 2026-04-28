@@ -559,8 +559,16 @@
     z-index: 2400;
     background: #0b0b0b;
     overflow-y: auto;
+    /* Hide scrollbars (still scrollable). User asked the detail not to
+     * surface a visible scrollbar; the dark background already conveys
+     * "more below" via the hero fade-out. */
+    scrollbar-width: none;
     animation: spDetailPopupIn 0.22s ease;
 }
+.sp-series-detail-popup::-webkit-scrollbar { display: none; }
+/* Same treatment on the horizontal episode rail. */
+.sp-series-detail-popup .overflow-x-auto { scrollbar-width: none; }
+.sp-series-detail-popup .overflow-x-auto::-webkit-scrollbar { display: none; }
 @keyframes spDetailPopupIn {
     from { opacity: 0; transform: translateY(12px); }
     to   { opacity: 1; transform: translateY(0); }
