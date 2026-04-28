@@ -623,8 +623,14 @@ export default function MediaPlayer(): JSX.Element {
   // mid-movie must NOT purge the entry, otherwise the user can't
   // resume.
   const saveProgress = (final = false) => {
-    const item = playbackItemFor(cur());
-    if (!item || !videoRef) return;
+    // Guard against the unmount-time race: closePlayer() flips the
+    // store to null first, then Solid's createEffect cleanup runs the
+    // last interval tick. cur() would assert non-null and crash. Bail
+    // when there's nothing to save against.
+    const o = open();
+    if (!o || !videoRef) return;
+    const item = playbackItemFor(o);
+    if (!item) return;
     const pos = videoRef.currentTime || 0;
     const dur = videoRef.duration || duration() || 0;
     const completed = final && dur > 0 && pos >= dur * 0.98;

@@ -29,7 +29,7 @@
  *  - registration uses `onCleanup` for unmount, no `useEffect` array required
  */
 
-import { createMemo, createSignal, onCleanup } from "solid-js";
+import { createMemo, createRoot, createSignal, onCleanup } from "solid-js";
 
 const NAV_DEBUG_FLAG = "ott_nav_debug";
 
@@ -109,23 +109,35 @@ export function unregisterScope(token: string): void {
 // ---------------------------------------------------------------------------
 // Reactive readers
 // ---------------------------------------------------------------------------
+//
+// Memos live for the lifetime of the app, so we wrap them in a root to
+// give Solid an owner. Without the root Solid logs:
+//   "computations created outside a createRoot or render will never be
+//    disposed"
+// They'd still work, but the warning was masking real issues during dev.
 
-export const activeScopes = createMemo<NavScope[]>(() => {
-  const arr = Array.from(scopes().values()).filter((s) => s.active);
-  arr.sort((a, b) => {
-    if (b.priority !== a.priority) return b.priority - a.priority;
-    return b.mountedAt - a.mountedAt;
+const { activeScopes, topScope, topScopeId } = createRoot(() => {
+  const activeScopes = createMemo<NavScope[]>(() => {
+    const arr = Array.from(scopes().values()).filter((s) => s.active);
+    arr.sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return b.mountedAt - a.mountedAt;
+    });
+    return arr;
   });
-  return arr;
+
+  const topScope = createMemo<NavScope | null>(
+    () => activeScopes()[0] ?? null,
+  );
+
+  const topScopeId = createMemo<string | null>(
+    () => topScope()?.id ?? null,
+  );
+
+  return { activeScopes, topScope, topScopeId };
 });
 
-export const topScope = createMemo<NavScope | null>(
-  () => activeScopes()[0] ?? null,
-);
-
-export const topScopeId = createMemo<string | null>(
-  () => topScope()?.id ?? null,
-);
+export { activeScopes, topScope, topScopeId };
 
 export function canHandleToken(token: string | null): boolean {
   if (!token) return false;
