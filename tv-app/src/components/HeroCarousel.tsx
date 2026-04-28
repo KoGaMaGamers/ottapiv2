@@ -449,13 +449,19 @@ function PreviewVideo(props: {
     }
   });
 
+  // The wrapper is required by the lifted hero.css —
+  // `.sp-browser:not(.live-page) .hp-hero-preview .video-player-wrapper`
+  // sets width:80%, anchors right, and paints the left/bottom fade
+  // gradients via ::before / ::after pseudo elements. Without it the
+  // video fills the entire hero with no fade.
   return (
-    <video
-      ref={(el) => (videoEl = el)}
-      class="hp-hero-preview-video"
-      muted
-      autoplay
-      playsinline
-    />
+    <div class="video-player-wrapper">
+      <video
+        ref={(el) => (videoEl = el)}
+        class="hp-hero-preview-video"
+        autoplay
+        playsinline
+      />
+    </div>
   );
 }
