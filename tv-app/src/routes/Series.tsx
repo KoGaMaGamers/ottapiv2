@@ -33,6 +33,7 @@ import {
 } from "solid-js";
 import { listSeriesGenres, listSeries, getSeries, getSeasonEpisodes } from "../api/catalog";
 import { previewEpisode } from "../api/play";
+import { playerOpen } from "../stores/player";
 import type {
   EpisodeOut,
   GenreCountOut,
@@ -538,7 +539,7 @@ export default function Series(): JSX.Element {
     if (previewDelay != null) clearTimeout(previewDelay);
     previewReqId += 1;
     setHeroPreviewClip(null);
-    if (!fg || selectedSeriesId() != null) return;
+    if (!fg || selectedSeriesId() != null || playerOpen()) return;
     const reqId = previewReqId;
     previewDelay = window.setTimeout(async () => {
       if (previewReqId !== reqId) return;
@@ -688,7 +689,7 @@ export default function Series(): JSX.Element {
           animKey={0}
           items={heroItems()}
           previewClip={heroPreviewClip()}
-          previewEnabled={selectedSeriesId() == null}
+          previewEnabled={selectedSeriesId() == null && !playerOpen()}
           focused={zone() === "hero"}
         />
       </Show>

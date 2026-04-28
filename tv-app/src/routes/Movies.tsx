@@ -67,7 +67,7 @@ import {
   MOVIE_SORT_OPTIONS,
 } from "../lib/sortPrefs";
 import SortSelector from "../components/SortSelector";
-import { openPlayer } from "../stores/player";
+import { openPlayer, playerOpen } from "../stores/player";
 import { previewMovie } from "../api/play";
 import type { PreviewClip } from "../components/HeroCarousel";
 
@@ -561,7 +561,7 @@ export default function Movies(): JSX.Element {
     if (previewDelay != null) clearTimeout(previewDelay);
     previewReqId += 1;
     setHeroPreviewClip(null);
-    if (!fg || selectedMovie()) return;
+    if (!fg || selectedMovie() || playerOpen()) return;
     const reqId = previewReqId;
     previewDelay = window.setTimeout(async () => {
       if (previewReqId !== reqId) return;
@@ -709,7 +709,7 @@ export default function Movies(): JSX.Element {
           animKey={0}
           items={heroItems()}
           previewClip={heroPreviewClip()}
-          previewEnabled={!selectedMovie()}
+          previewEnabled={!selectedMovie() && !playerOpen()}
           focused={zone() === "hero"}
         />
       </Show>
