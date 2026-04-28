@@ -414,7 +414,7 @@ export default function MediaPlayer(): JSX.Element {
 
   return (
     <div
-      class={`mp-shell${showControls() ? "" : " mp-shell--hidden-cursor"}`}
+      class={`mp-root${showControls() ? " mp-show-controls" : ""}`}
       onMouseMove={wakeControls}
       onClick={wakeControls}
     >
@@ -432,7 +432,7 @@ export default function MediaPlayer(): JSX.Element {
       />
 
       <Show when={buffering() && !allocError()}>
-        <div class="mp-buffering">
+        <div class="mp-spinner-wrap">
           <div class="mp-spinner" />
         </div>
       </Show>
