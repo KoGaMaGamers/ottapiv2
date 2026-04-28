@@ -396,7 +396,17 @@ export default function Series(): JSX.Element {
     });
   });
 
-  // Geometry-based grid neighbors
+  // Geometry-based grid neighbors.
+  //
+  // Uses offsetTop / offsetLeft / offsetWidth (the static layout box)
+  // rather than getBoundingClientRect, because the focused card has
+  // `transform: scale(1.075)` with `transform-origin: center bottom`
+  // which shifts the rendered rect's top by ~10px on portrait series
+  // posters (95×142px). With the old 8px row tolerance the focused
+  // card landed outside its row band — arrow-right found no neighbour
+  // and arrow-down picked sideways neighbours from the same visual
+  // row. offsetTop is unaffected by transforms, so the row-band
+  // logic stays correct regardless of focus scale.
   const moveByGeometry = (
     direction: "up" | "down" | "left" | "right",
   ): number | null => {
@@ -408,56 +418,55 @@ export default function Series(): JSX.Element {
     if (!cards.length) return null;
     const current = cards[gridIdx()];
     if (!current) return null;
-    const currentRect = current.getBoundingClientRect();
-    const currentCenterX = currentRect.left + currentRect.width / 2;
     const rowTolerance = 8;
     const mapped = cards.map((el, idx) => ({
       idx,
-      rect: el.getBoundingClientRect(),
+      top: el.offsetTop,
+      left: el.offsetLeft,
+      width: el.offsetWidth,
     }));
+    const cur = mapped[gridIdx()];
+    if (!cur) return null;
+    const currentCenterX = cur.left + cur.width / 2;
 
     if (direction === "up" || direction === "down") {
       const vertical = mapped.filter((m) =>
         direction === "down"
-          ? m.rect.top > currentRect.top + rowTolerance
-          : m.rect.top < currentRect.top - rowTolerance,
+          ? m.top > cur.top + rowTolerance
+          : m.top < cur.top - rowTolerance,
       );
       if (!vertical.length) return null;
       const targetTop =
         direction === "down"
-          ? Math.min(...vertical.map((m) => m.rect.top))
-          : Math.max(...vertical.map((m) => m.rect.top));
+          ? Math.min(...vertical.map((m) => m.top))
+          : Math.max(...vertical.map((m) => m.top));
       const targetRow = vertical.filter(
-        (m) => Math.abs(m.rect.top - targetTop) <= rowTolerance,
+        (m) => Math.abs(m.top - targetTop) <= rowTolerance,
       );
       if (!targetRow.length) return null;
       targetRow.sort((a, b) => {
-        const aCx = a.rect.left + a.rect.width / 2;
-        const bCx = b.rect.left + b.rect.width / 2;
+        const aCx = a.left + a.width / 2;
+        const bCx = b.left + b.width / 2;
         return Math.abs(aCx - currentCenterX) - Math.abs(bCx - currentCenterX);
       });
       return targetRow[0]?.idx ?? null;
     }
 
     const sameRow = mapped.filter(
-      (m) => Math.abs(m.rect.top - currentRect.top) <= rowTolerance,
+      (m) => Math.abs(m.top - cur.top) <= rowTolerance,
     );
     if (!sameRow.length) return null;
     if (direction === "left") {
       const lefts = sameRow
-        .filter((m) => m.rect.left + m.rect.width / 2 < currentCenterX - 1)
+        .filter((m) => m.left + m.width / 2 < currentCenterX - 1)
         .sort(
-          (a, b) =>
-            b.rect.left + b.rect.width / 2 - (a.rect.left + a.rect.width / 2),
+          (a, b) => b.left + b.width / 2 - (a.left + a.width / 2),
         );
       return lefts[0]?.idx ?? null;
     }
     const rights = sameRow
-      .filter((m) => m.rect.left + m.rect.width / 2 > currentCenterX + 1)
-      .sort(
-        (a, b) =>
-          a.rect.left + a.rect.width / 2 - (b.rect.left + b.rect.width / 2),
-      );
+      .filter((m) => m.left + m.width / 2 > currentCenterX + 1)
+      .sort((a, b) => a.left + a.width / 2 - (b.left + b.width / 2));
     return rights[0]?.idx ?? null;
   };
 
