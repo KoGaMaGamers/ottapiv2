@@ -31,8 +31,10 @@ import {
   Index,
   type JSX,
 } from "solid-js";
-import { listSeriesGenres, listSeries } from "../api/catalog";
+import { listSeriesGenres, listSeries, getSeries, getSeasonEpisodes } from "../api/catalog";
+import { previewEpisode } from "../api/play";
 import type {
+  EpisodeOut,
   GenreCountOut,
   SeriesListItem,
   SeriesSort,
@@ -44,6 +46,7 @@ import { getGradient, getAccent } from "../lib/gradient";
 import HeroCarousel, {
   type HeroBadge,
   type HeroItem,
+  type PreviewClip,
 } from "../components/HeroCarousel";
 import Sidebar, { type SidebarItem } from "../components/Sidebar";
 import SeriesMediaCard from "../components/SeriesMediaCard";
@@ -495,6 +498,70 @@ export default function Series(): JSX.Element {
     );
   });
 
+  // ── Hero preview clip ──────────────────────────────────────────────
+  // Series have no inherent "preview" file, so we pick a random
+  // episode from a random season the first time a card is focused
+  // and remember it for that series — repeated focus on the same
+  // card reuses the same episode rather than re-rolling. Three-step
+  // chain: getSeries → getSeasonEpisodes → previewEpisode. The
+  // 3-second debounce + previewSwitchReq epoch (legacy) protects
+  // against rapid focus changes resolving stale clips.
+  const seriesPreviewCache = new Map<number, EpisodeOut>();
+  const [heroPreviewClip, setHeroPreviewClip] =
+    createSignal<PreviewClip | null>(null);
+  let previewDelay: number | null = null;
+  let previewReqId = 0;
+
+  const pickRandomEpisode = async (
+    seriesId: number,
+  ): Promise<EpisodeOut | null> => {
+    const cached = seriesPreviewCache.get(seriesId);
+    if (cached) return cached;
+    try {
+      const detail = await getSeries(seriesId);
+      const seasons = detail.seasons ?? [];
+      if (!seasons.length) return null;
+      const season = seasons[Math.floor(Math.random() * seasons.length)];
+      const eps = await getSeasonEpisodes(seriesId, season.season_number);
+      const playable = eps.filter((ep) => ep?.id);
+      if (!playable.length) return null;
+      const picked = playable[Math.floor(Math.random() * playable.length)];
+      seriesPreviewCache.set(seriesId, picked);
+      return picked;
+    } catch {
+      return null;
+    }
+  };
+
+  createEffect(() => {
+    const fg = focusedGridSeries();
+    if (previewDelay != null) clearTimeout(previewDelay);
+    previewReqId += 1;
+    setHeroPreviewClip(null);
+    if (!fg || selectedSeriesId() != null) return;
+    const reqId = previewReqId;
+    previewDelay = window.setTimeout(async () => {
+      if (previewReqId !== reqId) return;
+      const ep = await pickRandomEpisode(fg.id);
+      if (previewReqId !== reqId || !ep) return;
+      try {
+        const { url } = await previewEpisode(ep.id);
+        if (previewReqId !== reqId) return;
+        setHeroPreviewClip({
+          clipId: `${fg.id}-${ep.id}-${Date.now()}`,
+          url,
+          startAtSec: 300 + Math.floor(Math.random() * 300),
+          playForSec: 60,
+        });
+      } catch {
+        /* preview failed — silent */
+      }
+    }, 3000);
+  });
+  onCleanup(() => {
+    if (previewDelay != null) clearTimeout(previewDelay);
+  });
+
   // Keyboard handler
   createEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -620,8 +687,8 @@ export default function Series(): JSX.Element {
           activeIndex={0}
           animKey={0}
           items={heroItems()}
-          previewClip={null}
-          previewEnabled={false}
+          previewClip={heroPreviewClip()}
+          previewEnabled={selectedSeriesId() == null}
           focused={zone() === "hero"}
         />
       </Show>
