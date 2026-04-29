@@ -279,15 +279,25 @@ export default function NativePlayerHost(): JSX.Element {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
     } finally {
+      // AWAIT the release before falling through to the sibling
+      // check. The backend's per-user concurrency limit
+      // (max_connections) means a fire-and-forget release races
+      // the next playEpisode() — the new allocation can be
+      // rejected while the old slot is still in tear-down. Awaiting
+      // makes the next allocation see a clean slate.
       if (allocationToken) {
-        releaseAllocation(allocationToken).catch(() => {});
+        try {
+          await releaseAllocation(allocationToken);
+        } catch {
+          /* best-effort */
+        }
       }
     }
 
     // Series prev/next + auto-play next: re-enter `run` with the
-    // adjacent episode if the Activity asked for one. No allocation
-    // teardown round-trip — the previous episode's slot was just
-    // released above; we'll allocate a fresh one for the next.
+    // adjacent episode if the Activity asked for one. The release
+    // above is already awaited so the new allocation has a fresh
+    // slot.
     if (result && !error()) {
       const sibling = nextEpisodeOpen(o, result.exitReason);
       // eslint-disable-next-line no-console
@@ -303,10 +313,20 @@ export default function NativePlayerHost(): JSX.Element {
       if (sibling) {
         // Update the player store so any reactive consumers stay
         // in sync (Continue Watching highlight, etc.) and run
-        // again — Activity stays opaque to JS during this tiny
-        // gap; the user sees one player → another.
+        // again. AppShell's `<Show when={playerOpen()}>` keeps
+        // children mounted across truthy → truthy transitions, so
+        // we don't unmount mid-recursion.
         openPlayer(sibling);
-        await run(sibling);
+        try {
+          await run(sibling);
+        } catch (e) {
+          // Surface inner-run failures (resolveSource throwing on
+          // slot allocation, etc.) so logcat tells us what went
+          // wrong instead of silently dropping back to the close
+          // path.
+          // eslint-disable-next-line no-console
+          console.error("[NativePlayerHost] recursive run failed:", e);
+        }
         return;
       }
     }

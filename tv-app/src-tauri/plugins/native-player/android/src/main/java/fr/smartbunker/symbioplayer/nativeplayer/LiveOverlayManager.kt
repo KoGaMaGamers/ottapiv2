@@ -495,22 +495,27 @@ class LiveOverlayManager(
     }
 
     /**
-     * Layered back: if the overlay is on screen, hide it (lets the
-     * user keep watching the channel uncluttered) and return true so
-     * PlayerActivity skips the exit. If the overlay is already
-     * hidden, return false — PlayerActivity then exits as normal.
+     * BACK toggles overlay visibility — always intercepts.
+     *   visible → hide (let the user keep watching uncluttered)
+     *   hidden  → show (so the user can navigate EPG / pick a
+     *             past entry / hit the close button)
      *
-     * Mirrors VodOverlayManager.handleKeyBack() so live + VOD share
-     * the "first BACK dismisses overlay, second BACK exits" UX.
+     * The player only exits via the explicit close button on the
+     * overlay (R.id.closeBtn → onClose() → finishWithResult("back"))
+     * or when catchup ends and PlayerActivity routes to
+     * returnToLiveStream(). This matches typical TV-app UX where
+     * BACK is a "dismiss panel" gesture, not a "leave activity"
+     * one.
      */
     fun handleKeyBack(): Boolean {
         android.util.Log.d(TAG, "handleKeyBack: isVisible=$isVisible isCatchupPlaying=$isCatchupPlaying")
         if (isVisible) {
             hideRunnable?.let { handler.removeCallbacks(it) }
             fadeOut()
-            return true
+        } else {
+            showWithTimer()
         }
-        return false
+        return true
     }
 
     fun destroy() {
