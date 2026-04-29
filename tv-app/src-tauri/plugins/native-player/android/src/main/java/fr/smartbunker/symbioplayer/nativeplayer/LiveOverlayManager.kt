@@ -494,30 +494,6 @@ class LiveOverlayManager(
         return true
     }
 
-    /**
-     * BACK toggles overlay visibility — always intercepts.
-     *   visible → hide (let the user keep watching uncluttered)
-     *   hidden  → show (so the user can navigate EPG / pick a
-     *             past entry / hit the close button)
-     *
-     * The player only exits via the explicit close button on the
-     * overlay (R.id.closeBtn → onClose() → finishWithResult("back"))
-     * or when catchup ends and PlayerActivity routes to
-     * returnToLiveStream(). This matches typical TV-app UX where
-     * BACK is a "dismiss panel" gesture, not a "leave activity"
-     * one.
-     */
-    fun handleKeyBack(): Boolean {
-        android.util.Log.d(TAG, "handleKeyBack: isVisible=$isVisible isCatchupPlaying=$isCatchupPlaying")
-        if (isVisible) {
-            hideRunnable?.let { handler.removeCallbacks(it) }
-            fadeOut()
-        } else {
-            showWithTimer()
-        }
-        return true
-    }
-
     fun destroy() {
         logoRequestToken++
         epgRequestToken++

@@ -157,23 +157,17 @@ class PlayerActivity : AppCompatActivity() {
         streamType == "series" || streamType == "episode"
 
     private fun handleBackNavigation() {
-        // Live: catchup -> overlay-dismiss -> exit. Mirrors the VOD
-        // layered-back pattern below so a single BACK press while the
-        // overlay is visible just hides it (lets the user keep
-        // watching the channel uncluttered). A second BACK with the
-        // overlay already hidden exits the player.
+        // Live: BACK exits immediately, mirroring the legacy app's
+        // behaviour. The only special case is catchup mode — back out
+        // of catchup → return to the live stream first; a second BACK
+        // then exits. (When catchup is wired in, EPG navigation /
+        // overlay dismissal will surface via the close button rather
+        // than overloading BACK semantics.)
         if (isLiveMode()) {
             if (isCatchupActive) {
-                android.util.Log.d(TAG, "handleBackNavigation: catchup → returnToLiveStream")
                 returnToLiveStream()
                 return
             }
-            val consumed = liveOverlay?.handleKeyBack() == true
-            android.util.Log.d(
-                TAG,
-                "handleBackNavigation: live overlay handleKeyBack consumed=$consumed",
-            )
-            if (consumed) return
             finishWithResult("back")
             return
         }
