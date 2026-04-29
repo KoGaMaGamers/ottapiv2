@@ -35,6 +35,7 @@ import {
   createResource,
   on,
   onCleanup,
+  onMount,
   Show,
   For,
   Index,
