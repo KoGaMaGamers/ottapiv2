@@ -147,13 +147,27 @@ class PlayerActivity : AppCompatActivity() {
         })
     }
 
+    /**
+     * JS sends `type: "episode"` (matches PlayerOpen.kind) but legacy
+     * Capacitor sent `type: "series"`. Accept both so prev/next
+     * episode buttons + media-key skip handlers light up regardless
+     * of which JS layer launched us.
+     */
+    private fun isSeriesMode(): Boolean =
+        streamType == "series" || streamType == "episode"
+
     private fun handleBackNavigation() {
-        // Live catchup uses layered back: catchup -> live -> exit.
+        // Live: catchup -> overlay-dismiss -> exit. Mirrors the VOD
+        // layered-back pattern below so a single BACK press while the
+        // overlay is visible just hides it (lets the user keep
+        // watching the channel uncluttered). A second BACK with the
+        // overlay already hidden exits the player.
         if (isLiveMode()) {
             if (isCatchupActive) {
                 returnToLiveStream()
                 return
             }
+            if (liveOverlay?.handleKeyBack() == true) return
             finishWithResult("back")
             return
         }
@@ -205,7 +219,7 @@ class PlayerActivity : AppCompatActivity() {
         val overlayView = LayoutInflater.from(this).inflate(R.layout.overlay_vod, rootFrame, false)
         rootFrame.addView(overlayView)
 
-        val seriesMode = streamType == "series"
+        val seriesMode = isSeriesMode()
 
         vodOverlay = VodOverlayManager(
             root = overlayView,
@@ -558,20 +572,20 @@ class PlayerActivity : AppCompatActivity() {
                     return true
                 }
                 KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                    if (streamType == "series") finishWithResult("next_episode")
+                    if (isSeriesMode()) finishWithResult("next_episode")
                     return true
                 }
                 KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-                    if (streamType == "series") finishWithResult("prev_episode")
+                    if (isSeriesMode()) finishWithResult("prev_episode")
                     return true
                 }
                 KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD -> {
-                    if (streamType == "series") finishWithResult("next_episode")
+                    if (isSeriesMode()) finishWithResult("next_episode")
                     else { playerManager.seekBy(30_000); vodOverlay?.onUserInteraction() }
                     return true
                 }
                 KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD -> {
-                    if (streamType == "series") finishWithResult("prev_episode")
+                    if (isSeriesMode()) finishWithResult("prev_episode")
                     else { playerManager.seekBy(-30_000); vodOverlay?.onUserInteraction() }
                     return true
                 }

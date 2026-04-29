@@ -494,6 +494,24 @@ class LiveOverlayManager(
         return true
     }
 
+    /**
+     * Layered back: if the overlay is on screen, hide it (lets the
+     * user keep watching the channel uncluttered) and return true so
+     * PlayerActivity skips the exit. If the overlay is already
+     * hidden, return false — PlayerActivity then exits as normal.
+     *
+     * Mirrors VodOverlayManager.handleKeyBack() so live + VOD share
+     * the "first BACK dismisses overlay, second BACK exits" UX.
+     */
+    fun handleKeyBack(): Boolean {
+        if (isVisible) {
+            hideRunnable?.let { handler.removeCallbacks(it) }
+            fadeOut()
+            return true
+        }
+        return false
+    }
+
     fun destroy() {
         logoRequestToken++
         epgRequestToken++
