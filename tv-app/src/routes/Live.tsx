@@ -62,7 +62,11 @@ import HeroCarousel, {
   type HeroItem,
 } from "../components/HeroCarousel";
 import Sidebar, { type SidebarItem } from "../components/Sidebar";
-import { openPlayer } from "../stores/player";
+import { openPlayer, playerOpen } from "../stores/player";
+import { isNativePlayerAvailable } from "../lib/nativePlayer";
+import { getUserCreds } from "../lib/userCreds";
+import { buildLiveUrl } from "../lib/streamUrls";
+import type { UserCredentials } from "../api/me";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -402,6 +406,53 @@ export default function Live(): JSX.Element {
   const focusedChannel = createMemo<LiveStreamItem | null>(() =>
     channels()[channelIdx()] ?? null,
   );
+
+  // ── Native inline preview (Tauri Android only) ──────────────────────
+  // Browser dev / desktop fall through to the WebView preview path
+  // (which is no-op for live since we pass previewClip={null}). On
+  // Android we fetch user xtream creds once, then build a direct
+  // /live URL each time focus settles for >3s on a channel — same
+  // 3s debounce Movies/Series use for hero clips.
+  const [creds, setCreds] = createSignal<UserCredentials | null>(null);
+  const [nativePreviewUrl, setNativePreviewUrl] = createSignal<string | null>(null);
+  let previewDelay: number | null = null;
+
+  if (isNativePlayerAvailable()) {
+    onMount(() => {
+      void getUserCreds().then(setCreds).catch(() => {});
+    });
+
+    createEffect(() => {
+      // Track focus + creds + player-open state.
+      const ch = focusedChannel();
+      const c = creds();
+      const playerActive = !!playerOpen();
+
+      if (previewDelay != null) {
+        clearTimeout(previewDelay);
+        previewDelay = null;
+      }
+      // Stop preview immediately on transitions that should kill it
+      // (channel cleared, player launched, creds not yet available).
+      // Don't wait for the 3s debounce here.
+      setNativePreviewUrl(null);
+
+      if (!ch || !c || playerActive) return;
+
+      previewDelay = window.setTimeout(() => {
+        // Re-check at fire time — focus may have moved during the
+        // debounce window.
+        const stillFocused = focusedChannel();
+        if (!stillFocused || stillFocused.id !== ch.id) return;
+        if (playerOpen()) return;
+        setNativePreviewUrl(buildLiveUrl(c, stillFocused.stream_id));
+      }, 3000);
+    });
+
+    onCleanup(() => {
+      if (previewDelay != null) clearTimeout(previewDelay);
+    });
+  }
 
   const heroItems = createMemo<HeroItem[]>(() => {
     const ch = focusedChannel();
@@ -811,7 +862,8 @@ export default function Live(): JSX.Element {
           animKey={channelIdx()}
           items={heroItems()}
           previewClip={null}
-          previewEnabled={false}
+          previewEnabled={true}
+          nativePreviewUrl={nativePreviewUrl()}
           focused={zone() === "hero"}
         />
       </Show>

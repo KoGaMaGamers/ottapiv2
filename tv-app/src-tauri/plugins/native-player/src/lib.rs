@@ -46,7 +46,15 @@ impl<R: Runtime, T: Manager<R>> crate::NativePlayerExt<R> for T {
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("native-player")
-        .invoke_handler(tauri::generate_handler![commands::start_player])
+        .invoke_handler(tauri::generate_handler![
+            commands::start_player,
+            commands::attach_inline_preview,
+            commands::update_inline_preview,
+            commands::play_inline_preview,
+            commands::stop_inline_preview,
+            commands::detach_inline_preview,
+            commands::stop_all_inline_previews,
+        ])
         .setup(|app, api| {
             #[cfg(mobile)]
             let native_player = mobile::init(app, api)?;

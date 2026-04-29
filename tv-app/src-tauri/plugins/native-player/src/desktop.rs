@@ -2,7 +2,10 @@ use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
 use tauri::{plugin::PluginApi, AppHandle, Runtime};
 
-use crate::commands::{PlayerResult, StartPlayerArgs};
+use crate::commands::{
+    InlinePreviewBoundsArgs, InlinePreviewIdArgs, InlinePreviewPlayArgs, PlayerResult,
+    StartPlayerArgs,
+};
 use crate::{Error, Result};
 
 /// Desktop builds keep the API surface compilable but every call returns
@@ -20,6 +23,30 @@ pub struct NativePlayer<R: Runtime>(PhantomData<R>);
 
 impl<R: Runtime> NativePlayer<R> {
     pub async fn start_player(&self, _args: StartPlayerArgs) -> Result<PlayerResult> {
+        Err(Error::NotAvailable)
+    }
+
+    pub async fn attach_inline_preview(&self, _args: InlinePreviewBoundsArgs) -> Result<()> {
+        Err(Error::NotAvailable)
+    }
+
+    pub async fn update_inline_preview(&self, _args: InlinePreviewBoundsArgs) -> Result<()> {
+        Err(Error::NotAvailable)
+    }
+
+    pub async fn play_inline_preview(&self, _args: InlinePreviewPlayArgs) -> Result<()> {
+        Err(Error::NotAvailable)
+    }
+
+    pub async fn stop_inline_preview(&self, _args: InlinePreviewIdArgs) -> Result<()> {
+        Err(Error::NotAvailable)
+    }
+
+    pub async fn detach_inline_preview(&self, _args: InlinePreviewIdArgs) -> Result<()> {
+        Err(Error::NotAvailable)
+    }
+
+    pub async fn stop_all_inline_previews(&self) -> Result<()> {
         Err(Error::NotAvailable)
     }
 }

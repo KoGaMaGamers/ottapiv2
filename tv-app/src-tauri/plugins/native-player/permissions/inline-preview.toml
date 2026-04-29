@@ -1,0 +1,19 @@
+"$schema" = "schemas/schema.json"
+
+[[permission]]
+identifier = "allow-inline-preview"
+description = """
+Allow JS to manage inline preview surfaces — floating ExoPlayer
+PlayerViews positioned over the WebView at JS-supplied viewport
+coordinates. Used by the Live page hero to play the focused channel
+inline (the WebView <video> path can't because IPTV providers
+don't send CORS headers).
+"""
+commands.allow = [
+    "attach_inline_preview",
+    "update_inline_preview",
+    "play_inline_preview",
+    "stop_inline_preview",
+    "detach_inline_preview",
+    "stop_all_inline_previews",
+]

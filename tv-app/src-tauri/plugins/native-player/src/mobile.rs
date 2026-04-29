@@ -4,11 +4,12 @@ use tauri::{
     AppHandle, Runtime,
 };
 
-use crate::commands::{PlayerResult, StartPlayerArgs};
+use crate::commands::{
+    InlinePreviewBoundsArgs, InlinePreviewIdArgs, InlinePreviewPlayArgs, PlayerResult,
+    StartPlayerArgs,
+};
 use crate::Result;
 
-/// Java identifier the Android side uses to look up our plugin class.
-/// Must match the `package` declaration in NativePlayerPlugin.kt.
 #[cfg(target_os = "android")]
 const PLUGIN_IDENTIFIER: &str = "fr.smartbunker.symbioplayer.nativeplayer";
 
@@ -27,16 +28,48 @@ pub struct NativePlayer<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> NativePlayer<R> {
     pub async fn start_player(&self, args: StartPlayerArgs) -> Result<PlayerResult> {
-        // `run_mobile_plugin` invokes the matching @Command on the
-        // Android side. The string must match the Kotlin method name.
         self.0
             .run_mobile_plugin("startPlayer", args)
             .map_err(Into::into)
     }
+
+    pub async fn attach_inline_preview(&self, args: InlinePreviewBoundsArgs) -> Result<()> {
+        self.0
+            .run_mobile_plugin::<()>("attachInlinePreview", args)
+            .map_err(Into::into)
+    }
+
+    pub async fn update_inline_preview(&self, args: InlinePreviewBoundsArgs) -> Result<()> {
+        self.0
+            .run_mobile_plugin::<()>("updateInlinePreview", args)
+            .map_err(Into::into)
+    }
+
+    pub async fn play_inline_preview(&self, args: InlinePreviewPlayArgs) -> Result<()> {
+        self.0
+            .run_mobile_plugin::<()>("playInlinePreview", args)
+            .map_err(Into::into)
+    }
+
+    pub async fn stop_inline_preview(&self, args: InlinePreviewIdArgs) -> Result<()> {
+        self.0
+            .run_mobile_plugin::<()>("stopInlinePreview", args)
+            .map_err(Into::into)
+    }
+
+    pub async fn detach_inline_preview(&self, args: InlinePreviewIdArgs) -> Result<()> {
+        self.0
+            .run_mobile_plugin::<()>("detachInlinePreview", args)
+            .map_err(Into::into)
+    }
+
+    pub async fn stop_all_inline_previews(&self) -> Result<()> {
+        self.0
+            .run_mobile_plugin::<()>("stopAllInlinePreviews", ())
+            .map_err(Into::into)
+    }
 }
 
-// iOS not in scope yet — phase B is Android-only. When we add iOS we'd
-// drop a `swift_plugin_init` extern fn here.
 #[cfg(target_os = "ios")]
 extern "C" {
     fn swift_plugin_init();

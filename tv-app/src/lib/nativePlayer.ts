@@ -87,3 +87,76 @@ export interface PlayerResult {
 export function launchNativePlayer(args: LaunchPlayerArgs): Promise<PlayerResult> {
   return invoke<PlayerResult>("plugin:native-player|start_player", { args });
 }
+
+// ---------------------------------------------------------------------------
+// Inline previews — floating ExoPlayer surface over the WebView
+// ---------------------------------------------------------------------------
+//
+// Used by the Live page hero: the focused channel plays inline in a
+// native PlayerView positioned at JS-supplied viewport coordinates,
+// because the WebView <video> path can't load IPTV streams (no CORS).
+//
+// Lifecycle the caller is expected to drive:
+//   1. attachInlinePreview(payload) — creates the native session
+//      with starting bounds (left/top/width/height in CSS pixels) +
+//      the WebView's viewport size for coordinate mapping.
+//   2. playInlinePreview({id, url, ...}) — starts playback.
+//   3. updateInlinePreview(payload) — call whenever the slot resizes
+//      / scrolls / the viewport changes.
+//   4. stopInlinePreview({id}) — stop playback (keeps the surface).
+//   5. detachInlinePreview({id}) — release surface + ExoPlayer.
+//
+// Or `stopAllInlinePreviews()` as a global escape hatch (e.g. before
+// launching the fullscreen player).
+
+export interface InlinePreviewBounds {
+  /** Stable id per surface — random suffix per logical preview slot. */
+  id: string;
+  /** CSS pixel coordinates relative to the WebView's top-left. */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Stack order; defaults to 1000. */
+  zIndex?: number;
+  /** Device pixel ratio. Currently unused by the native side
+   *  (it scales by viewport pixels) but kept for parity with the
+   *  legacy API. */
+  dpr?: number;
+  viewportWidth?: number;
+  viewportHeight?: number;
+}
+
+export interface InlinePreviewPlay {
+  id: string;
+  url: string;
+  muted?: boolean;
+  isLive?: boolean;
+  startAtSec?: number;
+  videoCodecHint?: string;
+  audioCodecHint?: string;
+}
+
+export function attachInlinePreview(args: InlinePreviewBounds): Promise<void> {
+  return invoke("plugin:native-player|attach_inline_preview", { args });
+}
+
+export function updateInlinePreview(args: InlinePreviewBounds): Promise<void> {
+  return invoke("plugin:native-player|update_inline_preview", { args });
+}
+
+export function playInlinePreview(args: InlinePreviewPlay): Promise<void> {
+  return invoke("plugin:native-player|play_inline_preview", { args });
+}
+
+export function stopInlinePreview(id: string): Promise<void> {
+  return invoke("plugin:native-player|stop_inline_preview", { args: { id } });
+}
+
+export function detachInlinePreview(id: string): Promise<void> {
+  return invoke("plugin:native-player|detach_inline_preview", { args: { id } });
+}
+
+export function stopAllInlinePreviews(): Promise<void> {
+  return invoke("plugin:native-player|stop_all_inline_previews");
+}

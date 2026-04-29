@@ -44,6 +44,8 @@ import {
   type JSX,
 } from "solid-js";
 import Hls from "hls.js";
+import NativePreviewSurface from "./NativePreviewSurface";
+import { isNativePlayerAvailable } from "../lib/nativePlayer";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -102,6 +104,14 @@ export interface HeroCarouselProps {
   previewClip?: PreviewClip | null;
   previewEnabled?: boolean;
   focused?: boolean;
+  /**
+   * Live native preview URL — when provided AND running on Tauri
+   * Android, replaces the WebView <video> preview path with a
+   * floating ExoPlayer surface (NativePreviewSurface). Used by
+   * the Live page hero. Browser dev / desktop / VOD flows ignore
+   * this prop and fall through to the standard <PreviewVideo>.
+   */
+  nativePreviewUrl?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +253,32 @@ export default function HeroCarousel(props: HeroCarouselProps): JSX.Element {
           )}
         </For>
 
-        <Show when={previewEnabled() && showPreview() && activePreviewClip()?.url}>
+        {/*
+          Native inline preview (Live hero on Tauri Android) takes
+          priority — IPTV providers don't send CORS so the WebView
+          <video> path can't load live URLs. We render a transparent
+          slot in the same DOM position so the layout stays
+          identical; the actual ExoPlayer renders behind via
+          addContentView at the slot's viewport coordinates.
+        */}
+        <Show when={props.nativePreviewUrl && isNativePlayerAvailable()}>
+          <div class="hp-hero-preview">
+            <NativePreviewSurface
+              url={props.nativePreviewUrl!}
+              active={previewEnabled()}
+              muted={true}
+              style={{ width: "100%", height: "100%" }}
+            />
+          </div>
+        </Show>
+        <Show
+          when={
+            !(props.nativePreviewUrl && isNativePlayerAvailable()) &&
+            previewEnabled() &&
+            showPreview() &&
+            activePreviewClip()?.url
+          }
+        >
           <div class="hp-hero-preview">
             <PreviewVideo
               url={activePreviewClip()!.url!}
