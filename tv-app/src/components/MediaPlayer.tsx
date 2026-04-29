@@ -59,8 +59,8 @@ import { listSubtitles, subtitleVttUrl } from "../api/subtitles";
 import {
   getResumePositionSec,
   savePlaybackProgress,
-  type PlaybackItem,
 } from "../lib/playbackStore";
+import { playbackItemFor } from "../lib/playbackItem";
 import {
   getPlaybackPreferences,
   setClientPreferences,
@@ -169,45 +169,8 @@ function titleFor(open: PlayerOpen): { title: string; subtitle: string } {
   return { title: open.series.name, subtitle };
 }
 
-/**
- * Convert the player's open state into the loose item shape the
- * playback store accepts. Live channels return null — we don't track
- * resume position for live (no meaningful "where I was" semantics).
- */
-function playbackItemFor(open: PlayerOpen): PlaybackItem | null {
-  if (open.kind === "movie") {
-    const m = open.movie;
-    return {
-      type: "movie",
-      id: m.id,
-      tmdb_id: m.tmdb_id,
-      title: m.name,
-      name: m.name,
-      logo: ("cover_big" in m ? m.cover_big : null) ?? m.stream_icon,
-      backdrop: m.backdrop_path,
-      year: m.year,
-      genres: m.genres,
-    };
-  }
-  if (open.kind === "episode") {
-    const s = open.series;
-    const ep = open.episode;
-    return {
-      type: "series",
-      _ottSeriesId: s.id,
-      id: ep.id,
-      tmdb_id: s.tmdb_id,
-      title: s.name,
-      name: s.name,
-      logo: s.cover,
-      backdrop: s.backdrop_path,
-      season: ep.season_number,
-      episode: ep.episode_num,
-      genres: s.genres,
-    };
-  }
-  return null;
-}
+// playbackItemFor lives in lib/playbackItem.ts so the native player
+// host can reuse it without dragging in the WebView player.
 
 async function allocateFor(open: PlayerOpen): Promise<PlayResponse> {
   if (open.kind === "movie") return playMovie(open.movie.id);
