@@ -135,8 +135,11 @@ class PlayerActivity : AppCompatActivity() {
         loadingOverlay.visibility = View.VISIBLE
         startPlayback()
 
-        // Android TV / emulator back can come through dispatcher (not always as KEYCODE_BACK).
-        // Always let overlay managers consume it first; only exit when unhandled.
+        // Register back handler via onBackPressedDispatcher — required on
+        // Android 13+ where predictive back bypasses onKeyDown entirely.
+        // On Android TV, both onKeyDown and the dispatcher may fire for the
+        // same back press — onKeyDown now just returns true (consumed) without
+        // calling handleBackNavigation(), letting this be the single handler.
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 handleBackNavigation()
@@ -451,6 +454,10 @@ class PlayerActivity : AppCompatActivity() {
             putExtra("selectedSubtitleLang", selectedSubtitleLang)
             putExtra("selectedAudioLang", selectedAudioLang)
         }
+        // Deliver result via static callback (reliable, no ActivityResultRegistry).
+        // Also set Activity result as fallback.
+        NativePlayerPlugin.onResult?.invoke(resultIntent)
+        NativePlayerPlugin.onResult = null
         setResult(Activity.RESULT_OK, resultIntent)
         finish()
     }
@@ -465,8 +472,11 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        // Consume BACK/ESCAPE on key-down but defer finish() to onKeyUp.
+        // If we finish() here, the activity destroys before key-up arrives,
+        // and the orphaned key-up event propagates to WryActivity, causing
+        // a duplicate back navigation in the WebView.
         if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
-            handleBackNavigation()
             return true
         }
 
@@ -572,6 +582,11 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        // BACK/ESCAPE: just consume — onBackPressedDispatcher handles the action.
+        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            return true
+        }
+
         // Prevent default focused-view click behavior on TV remotes.
         // We handle these keys explicitly in onKeyDown via overlay managers.
         val handledKeys = setOf(

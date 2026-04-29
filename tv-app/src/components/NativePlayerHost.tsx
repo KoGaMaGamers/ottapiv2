@@ -24,8 +24,10 @@
  * land and never sees us.
  */
 
-import { createSignal, onMount, Show, type JSX } from "solid-js";
+import { createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { closePlayer, playerOpen, type PlayerOpen } from "../stores/player";
+import { useNavigationScope } from "../lib/navigation";
+import { isBackKey } from "../lib/navigationKeys";
 import {
   playMovie,
   playLive,
@@ -41,6 +43,7 @@ import {
   launchNativePlayer,
   type LaunchPlayerArgs,
 } from "../lib/nativePlayer";
+import { setNativePlayerActive } from "../lib/hardwareBack";
 
 // Same fan-out the WebView player uses. The stream URL we hand the
 // native side comes from this allocation; once the activity closes
@@ -105,6 +108,29 @@ function buildLaunchArgs(
 export default function NativePlayerHost(): JSX.Element {
   const [error, setError] = createSignal<string | null>(null);
   const [launching, setLaunching] = createSignal(true);
+  const [running, setRunning] = createSignal(false);
+
+  // Register at high priority so back/escape doesn't leak to page handlers.
+  const { isScopeOwner } = useNavigationScope("player:native", {
+    active: true,
+    priority: 100,
+  });
+
+  // Clean up the native player flag on unmount in case it's still set.
+  onCleanup(() => setNativePlayerActive(false));
+
+  // Consume back/escape while mounted — prevents page handlers from
+  // firing. While running, just swallow (native PlayerActivity handles
+  // its own back). When not running, allow closePlayer().
+  const onKey = (e: KeyboardEvent) => {
+    if (!isScopeOwner()) return;
+    if (!isBackKey(e.key)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (!running()) closePlayer();
+  };
+  window.addEventListener("keydown", onKey, true);
+  onCleanup(() => window.removeEventListener("keydown", onKey, true));
 
   onMount(() => {
     const o = playerOpen();
@@ -125,9 +151,15 @@ export default function NativePlayerHost(): JSX.Element {
       const resumeSec = item ? getResumePositionSec(item) : 0;
 
       // Hand off to native. This call blocks until the Activity finishes.
-      const result = await launchNativePlayer(
-        buildLaunchArgs(o, alloc.stream_url, Math.round(resumeSec * 1000)),
-      );
+      setRunning(true);
+      let result;
+      try {
+        result = await launchNativePlayer(
+          buildLaunchArgs(o, alloc.stream_url, Math.round(resumeSec * 1000)),
+        );
+      } finally {
+        setRunning(false);
+      }
 
       // Persist the final position. Cross-store cleanup (watchlist /
       // history) fires inside savePlaybackProgress when completion
@@ -154,12 +186,13 @@ export default function NativePlayerHost(): JSX.Element {
           /* swallow — release is best-effort */
         });
       }
-      // Unmount this host. AppShell will re-render without us.
-      // Slight delay so the user can see an error toast if one
-      // happened (though usually the native activity took over the
-      // screen and we never showed anything).
-      setTimeout(() => closePlayer(), error() ? 1500 : 100);
       setLaunching(false);
+      if (error()) {
+        // Brief delay so the user can read the error toast.
+        setTimeout(() => closePlayer(), 1500);
+      } else {
+        closePlayer();
+      }
     }
   }
 

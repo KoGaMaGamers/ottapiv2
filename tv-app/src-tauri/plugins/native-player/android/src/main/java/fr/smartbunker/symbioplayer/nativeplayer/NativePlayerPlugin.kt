@@ -2,11 +2,6 @@ package fr.smartbunker.symbioplayer.nativeplayer
 
 import android.app.Activity
 import android.content.Intent
-import androidx.activity.ComponentActivity
-import androidx.activity.result.ActivityResult
-import androidx.activity.result.ActivityResultCallback
-import androidx.activity.result.ActivityResultLauncher
-import androidx.activity.result.contract.ActivityResultContracts
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -14,12 +9,6 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 
-/**
- * JS-side argument shape for `start_player`. Mirrors the Rust
- * `StartPlayerArgs` serde camel-case so Tauri's JSON router maps
- * cleanly. Defaults match the legacy Capacitor plugin so callers can
- * omit anything but `url`.
- */
 @InvokeArg
 class StartPlayerArgs {
     lateinit var url: String
@@ -31,43 +20,26 @@ class StartPlayerArgs {
 }
 
 /**
- * Tauri 2.0 native-player plugin entry. Launches `PlayerActivity`
- * (the lifted ExoPlayer fullscreen player) and pipes the result back
- * to the JS caller.
+ * Tauri 2.0 native-player plugin. Launches PlayerActivity and pipes
+ * the result back to JS.
  *
- * Registration note:
- *   Tauri constructs plugins when the host WryActivity is already in
- *   RESUMED state. The lifecycle-aware `registerForActivityResult`
- *   overload throws IllegalStateException if called after STARTED.
- *   We use the non-lifecycle `ActivityResultRegistry.register(key,
- *   contract, callback)` overload instead — it skips the lifecycle
- *   check and works at any point. We must manually unregister in
- *   onDestroy to avoid leaks.
+ * Uses a static callback pattern instead of ActivityResultLauncher
+ * because Tauri constructs plugins when the host Activity is already
+ * RESUMED, and the non-lifecycle ActivityResultRegistry.register()
+ * overload unreliably fires callbacks on subsequent launches.
+ *
+ * PlayerActivity calls NativePlayerPlugin.onPlayerFinished() directly
+ * from its finishWithResult() method.
  */
 @TauriPlugin
 class NativePlayerPlugin(private val activity: Activity) : Plugin(activity) {
 
-    /** Pending Invoke kept across the activity-launch round-trip. */
+    companion object {
+        /** Static callback — set before each launch, called by PlayerActivity. */
+        var onResult: ((Intent?) -> Unit)? = null
+    }
+
     private var pendingInvoke: Invoke? = null
-
-    private val playerLauncher: ActivityResultLauncher<Intent>
-
-    init {
-        val componentActivity = activity as ComponentActivity
-        // Non-lifecycle overload: register(key, contract, callback)
-        // Does NOT enforce "must register before STARTED" — safe to
-        // call at any Activity lifecycle state.
-        playerLauncher = componentActivity.activityResultRegistry.register(
-            "native-player-launch",
-            ActivityResultContracts.StartActivityForResult(),
-            ActivityResultCallback { result -> handlePlayerResult(result) }
-        )
-    }
-
-    override fun onDestroy() {
-        playerLauncher.unregister()
-        super.onDestroy()
-    }
 
     @Command
     fun startPlayer(invoke: Invoke) {
@@ -79,10 +51,24 @@ class NativePlayerPlugin(private val activity: Activity) : Plugin(activity) {
                 return
             }
 
-            if (pendingInvoke != null) {
-                invoke.reject("Player already launching")
-                return
+            // Clear any stale pending invoke
+            pendingInvoke?.let { stale ->
+                val cancel = JSObject()
+                cancel.put("lastPosition", 0)
+                cancel.put("lastDuration", 0)
+                cancel.put("exitReason", "cancelled")
+                cancel.put("errorMessage", "")
+                cancel.put("errorId", "")
+                cancel.put("selectedSubtitleLang", "")
+                cancel.put("selectedAudioLang", "")
+                stale.resolve(cancel)
             }
+
+            pendingInvoke = invoke
+            android.util.Log.d("NativePlayer", "startPlayer: setting callback and launching")
+
+            // Set the static callback BEFORE starting the Activity
+            onResult = { resultData -> handlePlayerResult(resultData) }
 
             val intent = Intent(activity, PlayerActivity::class.java).apply {
                 putExtra("url", args.url)
@@ -93,41 +79,28 @@ class NativePlayerPlugin(private val activity: Activity) : Plugin(activity) {
                 putExtra("resumePosition", args.resumePosition)
             }
 
-            pendingInvoke = invoke
-            playerLauncher.launch(intent)
+            activity.startActivity(intent)
         } catch (e: Exception) {
+            pendingInvoke = null
             invoke.reject("Native player error: ${e.message}")
         }
     }
 
-    /**
-     * Fires when PlayerActivity finishes. Mirrors the legacy
-     * `handlePlayerResult` JSObject shape exactly so the JS bindings
-     * keep working unchanged.
-     */
-    private fun handlePlayerResult(result: ActivityResult) {
+    private fun handlePlayerResult(data: Intent?) {
+        android.util.Log.d("NativePlayer", "handlePlayerResult called, pendingInvoke=${pendingInvoke != null}")
         val invoke = pendingInvoke ?: return
         pendingInvoke = null
 
         val ret = JSObject()
-        if (result.resultCode == Activity.RESULT_OK) {
-            val data = result.data
-            ret.put("lastPosition", data?.getLongExtra("lastPosition", 0) ?: 0)
-            ret.put("lastDuration", data?.getLongExtra("lastDuration", 0) ?: 0)
-            ret.put("exitReason", data?.getStringExtra("exitReason") ?: "back")
-            ret.put("errorMessage", data?.getStringExtra("errorMessage") ?: "")
-            ret.put("errorId", data?.getStringExtra("errorId") ?: "")
-            ret.put("selectedSubtitleLang", data?.getStringExtra("selectedSubtitleLang") ?: "")
-            ret.put("selectedAudioLang", data?.getStringExtra("selectedAudioLang") ?: "")
-        } else {
-            ret.put("lastPosition", 0)
-            ret.put("lastDuration", 0)
-            ret.put("exitReason", "cancelled")
-            ret.put("errorMessage", "")
-            ret.put("errorId", "")
-            ret.put("selectedSubtitleLang", "")
-            ret.put("selectedAudioLang", "")
-        }
+        ret.put("lastPosition", data?.getLongExtra("lastPosition", 0) ?: 0)
+        ret.put("lastDuration", data?.getLongExtra("lastDuration", 0) ?: 0)
+        ret.put("exitReason", data?.getStringExtra("exitReason") ?: "back")
+        ret.put("errorMessage", data?.getStringExtra("errorMessage") ?: "")
+        ret.put("errorId", data?.getStringExtra("errorId") ?: "")
+        ret.put("selectedSubtitleLang", data?.getStringExtra("selectedSubtitleLang") ?: "")
+        ret.put("selectedAudioLang", data?.getStringExtra("selectedAudioLang") ?: "")
+        android.util.Log.d("NativePlayer", "resolving invoke with exitReason=${ret.getString("exitReason")}")
         invoke.resolve(ret)
+        android.util.Log.d("NativePlayer", "invoke.resolve() completed")
     }
 }

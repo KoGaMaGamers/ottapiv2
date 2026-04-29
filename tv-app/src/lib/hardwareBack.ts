@@ -35,6 +35,17 @@ let installed = false;
 const SYNTH_FLAG = "__symbioBackSynth";
 
 /**
+ * While true, hardware back events are swallowed entirely — no
+ * synthetic Escape is dispatched. Set by NativePlayerHost while the
+ * native ExoPlayer Activity is in the foreground, because back presses
+ * inside the native overlay also leak as BrowserBack to the WebView.
+ */
+let _nativePlayerActive = false;
+export function setNativePlayerActive(active: boolean): void {
+  _nativePlayerActive = active;
+}
+
+/**
  * Android hardware back surfaces under a few key names depending on
  * the WebView version / vendor. Cover all the variants we've seen.
  */
@@ -47,29 +58,21 @@ export function installHardwareBackHandler(): void {
   window.addEventListener(
     "keydown",
     (e: KeyboardEvent) => {
-      // Only intercept the Android hardware back keys. Desktop
-      // Escape / Backspace flow naturally — components already
-      // handle them via isBackKey().
       if (!HARDWARE_BACK_KEYS.has(e.key)) return;
-
-      // Pass-through if we synthesised this event ourselves —
-      // capture phase fires for the synthetic too without this
-      // guard.
       if ((e as unknown as Record<string, unknown>)[SYNTH_FLAG]) return;
 
-      // 1) Suppress the WebView's default (history.back() pops the
-      //    SPA route).
-      // 2) Stop other listeners on the original so handlers don't
-      //    run twice (once for the original, once for the synthetic
-      //    Escape we're about to dispatch).
+      // Always suppress the WebView's default history.back().
       e.preventDefault();
       e.stopImmediatePropagation();
 
-      // 3) Synthesise a single Escape dispatched at the focused
-      //    element. Bubbles so window-level listeners (page nav,
-      //    modal handlers, player overlay) still see it. Existing
-      //    components consume via preventDefault on this synthetic
-      //    just like a regular keypress.
+      // While the native ExoPlayer Activity is in the foreground,
+      // swallow entirely — PlayerActivity handles its own back via
+      // onKeyDown/onKeyUp. The BrowserBack that leaks here is a
+      // ghost event; synthesising Escape would close the allocation.
+      if (_nativePlayerActive) return;
+
+      // Synthesise a single Escape at the focused element so the
+      // scope-stack handlers process it.
       const synth = new KeyboardEvent("keydown", {
         key: "Escape",
         code: "Escape",
