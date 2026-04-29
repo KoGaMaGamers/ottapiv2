@@ -290,6 +290,16 @@ export default function NativePlayerHost(): JSX.Element {
     // released above; we'll allocate a fresh one for the next.
     if (result && !error()) {
       const sibling = nextEpisodeOpen(o, result.exitReason);
+      // eslint-disable-next-line no-console
+      console.log(
+        "[NativePlayerHost] exitReason=", result.exitReason,
+        "kind=", o.kind,
+        "seasonEpisodes.length=",
+        o.kind === "episode" ? (o.seasonEpisodes?.length ?? 0) : "n/a",
+        "currentEpisodeId=",
+        o.kind === "episode" ? o.episode.id : "n/a",
+        "sibling=", sibling ? `${sibling.kind}#${sibling.episode.id}` : "null",
+      );
       if (sibling) {
         // Update the player store so any reactive consumers stay
         // in sync (Continue Watching highlight, etc.) and run

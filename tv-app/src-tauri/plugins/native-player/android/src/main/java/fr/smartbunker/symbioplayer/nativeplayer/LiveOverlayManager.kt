@@ -504,6 +504,7 @@ class LiveOverlayManager(
      * the "first BACK dismisses overlay, second BACK exits" UX.
      */
     fun handleKeyBack(): Boolean {
+        android.util.Log.d(TAG, "handleKeyBack: isVisible=$isVisible isCatchupPlaying=$isCatchupPlaying")
         if (isVisible) {
             hideRunnable?.let { handler.removeCallbacks(it) }
             fadeOut()

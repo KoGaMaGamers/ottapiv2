@@ -164,10 +164,16 @@ class PlayerActivity : AppCompatActivity() {
         // overlay already hidden exits the player.
         if (isLiveMode()) {
             if (isCatchupActive) {
+                android.util.Log.d(TAG, "handleBackNavigation: catchup → returnToLiveStream")
                 returnToLiveStream()
                 return
             }
-            if (liveOverlay?.handleKeyBack() == true) return
+            val consumed = liveOverlay?.handleKeyBack() == true
+            android.util.Log.d(
+                TAG,
+                "handleBackNavigation: live overlay handleKeyBack consumed=$consumed",
+            )
+            if (consumed) return
             finishWithResult("back")
             return
         }
