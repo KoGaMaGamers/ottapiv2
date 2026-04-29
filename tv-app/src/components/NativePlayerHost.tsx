@@ -1,23 +1,36 @@
 /**
  * Native player host — Android-only sibling of `MediaPlayer.tsx`.
  *
+ * Responsibilities
+ * ----------------
  * Mounted by `AppShell` (instead of `<MediaPlayer />`) when
- * `isNativePlayerAvailable()` returns true. Lifecycle:
+ * `isNativePlayerAvailable()` returns true. For each item the user
+ * launches we:
  *
- *   1. On mount: allocate a stream URL via the same /api/v1/play/*
- *      endpoint the WebView player uses (slot allocation, heartbeat
- *      cadence, etc. all unchanged).
+ *   1. Resolve a stream URL.
+ *      - Live: built locally from the user's xtream credentials so
+ *        the native player can zap to siblings + start catchup
+ *        without a /api/v1/play round-trip per channel. Phase D's
+ *        "donor policy = user creds first" applied early for live.
+ *      - Movie / episode: still slot-allocated through /api/v1/play
+ *        — those have a clearer "watch session" semantic where
+ *        heartbeat + release are appropriate.
  *   2. Look up resume position from playbackStore.
- *   3. Invoke the `native-player` Tauri plugin's `start_player`
- *      command — this hands control over to the lifted ExoPlayer
- *      Activity, which blocks until the user closes it.
- *   4. On close: the Activity returns final position / duration / exit
- *      reason / language picks. We fold those into the same store
- *      writes the WebView player does:
- *        - savePlaybackProgress (triggers the cross-store cleanup
- *          chain when ≥90% — watchlist remove + history record)
- *        - releaseAllocation
- *   5. Clear `playerOpen` so AppShell unmounts us.
+ *   3. Build the launch payload — `channelData` carries the metadata
+ *      the lifted Kotlin needs:
+ *        - live   → base_stream_url + creds + channels list +
+ *                   currentIndex (LiveOverlayManager, EpgService).
+ *        - vod    → tmdb_id + season + episode + preferred langs
+ *                   (SubtitleManager, VodOverlayManager).
+ *   4. Invoke the `native-player` Tauri plugin's `start_player`
+ *      command. Blocks until the Activity finishes.
+ *   5. Fold the result back into the same store writes the WebView
+ *      player does — savePlaybackProgress (cross-store cleanup
+ *      cascades), releaseAllocation.
+ *   6. Series prev/next + auto-play next: when the Activity returns
+ *      with exitReason `prev_episode` / `next_episode` / `finished`
+ *      and the open state has sibling episodes, relaunch with the
+ *      adjacent episode instead of closing.
  *
  * Renders a thin "Launching player…" placeholder while the activity
  * is starting; once the Activity is on screen, the user is in native
@@ -25,12 +38,16 @@
  */
 
 import { createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
-import { closePlayer, playerOpen, type PlayerOpen } from "../stores/player";
+import {
+  closePlayer,
+  openPlayer,
+  playerOpen,
+  type PlayerOpen,
+} from "../stores/player";
 import { useNavigationScope } from "../lib/navigation";
 import { isBackKey } from "../lib/navigationKeys";
 import {
   playMovie,
-  playLive,
   playEpisode,
   release as releaseAllocation,
 } from "../api/play";
@@ -42,23 +59,45 @@ import { playbackItemFor } from "../lib/playbackItem";
 import {
   launchNativePlayer,
   type LaunchPlayerArgs,
+  type PlayerResult,
 } from "../lib/nativePlayer";
 import { setNativePlayerActive } from "../lib/hardwareBack";
+import { getUserCreds } from "../lib/userCreds";
+import type { UserCredentials } from "../api/me";
+import { buildLiveUrl } from "../lib/streamUrls";
+import { getPlaybackPreferences } from "../lib/clientPreferences";
 
-// Same fan-out the WebView player uses. The stream URL we hand the
-// native side comes from this allocation; once the activity closes
-// we release the slot.
-async function allocateFor(open: PlayerOpen) {
-  if (open.kind === "movie") return playMovie(open.movie.id);
-  if (open.kind === "live") return playLive(open.channel.id);
-  return playEpisode(open.episode.id);
+interface ResolvedSource {
+  /** Direct stream URL handed to ExoPlayer. */
+  url: string;
+  /** Allocation token for VOD; null for live (no slot). */
+  allocationToken: string | null;
+}
+
+async function resolveSource(open: PlayerOpen): Promise<ResolvedSource> {
+  if (open.kind === "movie") {
+    const r = await playMovie(open.movie.id);
+    return { url: r.stream_url, allocationToken: r.allocation_token };
+  }
+  if (open.kind === "episode") {
+    const r = await playEpisode(open.episode.id);
+    return { url: r.stream_url, allocationToken: r.allocation_token };
+  }
+  // Live — direct user-creds URL, no slot.
+  const creds = await getUserCreds();
+  return {
+    url: buildLiveUrl(creds, open.channel.stream_id),
+    allocationToken: null,
+  };
 }
 
 function buildLaunchArgs(
   open: PlayerOpen,
   streamUrl: string,
   resumeMs: number,
+  creds: UserCredentials | null,
 ): LaunchPlayerArgs {
+  const prefs = getPlaybackPreferences();
   if (open.kind === "movie") {
     const m = open.movie;
     return {
@@ -67,6 +106,17 @@ function buildLaunchArgs(
       title: m.name,
       subtitle: m.year ? String(m.year) : "",
       resumePosition: resumeMs,
+      // SubtitleManager hits /api/v1/subtitles?tmdb_id=…&lang=…
+      // when tmdb_id is non-empty. Pass it along + the user's
+      // preferred audio/subtitle langs so the overlay can auto-
+      // pick on first track-discovery tick.
+      channelData: JSON.stringify({
+        tmdb_id: m.tmdb_id ?? null,
+        season: 0,
+        episode: 0,
+        preferredSubtitleLang: prefs.preferredSubtitleLang,
+        preferredAudioLang: prefs.preferredAudioLang,
+      }),
     };
   }
   if (open.kind === "episode") {
@@ -81,27 +131,72 @@ function buildLaunchArgs(
       title: s.name,
       subtitle: ep.title ? `${epLabel} · ${ep.title}` : epLabel,
       resumePosition: resumeMs,
+      channelData: JSON.stringify({
+        tmdb_id: s.tmdb_id ?? null,
+        season: ep.season_number,
+        episode: ep.episode_num,
+        preferredSubtitleLang: prefs.preferredSubtitleLang,
+        preferredAudioLang: prefs.preferredAudioLang,
+      }),
     };
   }
   // Live: hand the native side a JSON blob the lifted EpgService /
-  // LiveOverlayManager can parse for channel + EPG metadata. Mirrors
-  // the legacy Capacitor `channelData` payload shape.
+  // LiveOverlayManager / ChannelData parser expect. Snake-case keys
+  // match `ChannelData.kt#fromJson`. Channels list lets the native
+  // overlay zap to siblings without re-invoking JS.
   const ch = open.channel;
-  const channelData = JSON.stringify({
-    streamId: ch.stream_id,
-    name: ch.name,
-    epgChannelId: ch.epg_channel_id ?? null,
-    streamIcon: ch.stream_icon ?? null,
-    tvArchive: !!ch.tv_archive,
-    categoryId: ch.category_id ?? null,
-  });
+  const channels = open.channels ?? [ch];
+  const currentIndex = open.index ?? 0;
+  const c = creds!; // resolveSource always populated creds for live
   return {
     url: streamUrl,
     type: "live",
     title: ch.name,
     subtitle: "",
-    channelData,
+    channelData: JSON.stringify({
+      base_stream_url: c.base_stream_url,
+      username: c.username,
+      password: c.password,
+      preferred_output: c.preferred_output,
+      currentIndex,
+      channels: channels.map((row) => ({
+        stream_id: row.stream_id,
+        name: row.name,
+        stream_icon: row.stream_icon ?? "",
+        tv_archive: !!row.tv_archive,
+        audio_codec: "",
+        video_codec: "",
+      })),
+    }),
     resumePosition: 0,
+  };
+}
+
+/**
+ * Map the Activity's exitReason into a sibling episode (or null when
+ * the user just wants to close). `next_episode` and `finished` both
+ * advance forward; `prev_episode` walks back. Returns null when there
+ * is no neighbour in the season list — caller closes normally.
+ */
+function nextEpisodeOpen(
+  open: PlayerOpen,
+  reason: string,
+): PlayerOpen | null {
+  if (open.kind !== "episode") return null;
+  const list = open.seasonEpisodes ?? [];
+  if (list.length === 0) return null;
+  const cur = list.findIndex((e) => e.id === open.episode.id);
+  if (cur < 0) return null;
+  let target: number;
+  if (reason === "prev_episode") target = cur - 1;
+  else if (reason === "next_episode" || reason === "finished") target = cur + 1;
+  else return null;
+  if (target < 0 || target >= list.length) return null;
+  return {
+    kind: "episode",
+    series: open.series,
+    episode: list[target],
+    seasonEpisodes: list,
   };
 }
 
@@ -110,18 +205,13 @@ export default function NativePlayerHost(): JSX.Element {
   const [launching, setLaunching] = createSignal(true);
   const [running, setRunning] = createSignal(false);
 
-  // Register at high priority so back/escape doesn't leak to page handlers.
   const { isScopeOwner } = useNavigationScope("player:native", {
     active: true,
     priority: 100,
   });
 
-  // Clean up the native player flag on unmount in case it's still set.
   onCleanup(() => setNativePlayerActive(false));
 
-  // Consume back/escape while mounted — prevents page handlers from
-  // firing. While running, just swallow (native PlayerActivity handles
-  // its own back). When not running, allow closePlayer().
   const onKey = (e: KeyboardEvent) => {
     if (!isScopeOwner()) return;
     if (!isBackKey(e.key)) return;
@@ -141,30 +231,39 @@ export default function NativePlayerHost(): JSX.Element {
     void run(o);
   });
 
-  async function run(o: PlayerOpen) {
+  /**
+   * Drives one launch → Activity → result cycle. May call itself
+   * recursively when the Activity returns with `prev_episode` /
+   * `next_episode` / `finished` to launch the sibling episode
+   * inline (no overlay flicker).
+   */
+  async function run(o: PlayerOpen): Promise<void> {
     let allocationToken: string | null = null;
+    let result: PlayerResult | null = null;
     try {
-      const alloc = await allocateFor(o);
-      allocationToken = alloc.allocation_token;
+      const source = await resolveSource(o);
+      allocationToken = source.allocationToken;
+
+      // For live, creds were already fetched inside resolveSource —
+      // grab them again synchronously from the cache for buildLaunchArgs.
+      let creds: UserCredentials | null = null;
+      if (o.kind === "live") {
+        creds = await getUserCreds();
+      }
 
       const item = playbackItemFor(o);
       const resumeSec = item ? getResumePositionSec(item) : 0;
 
-      // Hand off to native. This call blocks until the Activity finishes.
       setRunning(true);
-      let result;
       try {
         result = await launchNativePlayer(
-          buildLaunchArgs(o, alloc.stream_url, Math.round(resumeSec * 1000)),
+          buildLaunchArgs(o, source.url, Math.round(resumeSec * 1000), creds),
         );
       } finally {
         setRunning(false);
       }
 
-      // Persist the final position. Cross-store cleanup (watchlist /
-      // history) fires inside savePlaybackProgress when completion
-      // criteria are hit.
-      if (item) {
+      if (item && result) {
         const finalPosSec = (result.lastPosition || 0) / 1000;
         const finalDurSec = (result.lastDuration || 0) / 1000;
         const finishedFlag = result.exitReason === "finished";
@@ -179,20 +278,34 @@ export default function NativePlayerHost(): JSX.Element {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
-      // Fall through — still close the overlay + release.
     } finally {
       if (allocationToken) {
-        releaseAllocation(allocationToken).catch(() => {
-          /* swallow — release is best-effort */
-        });
+        releaseAllocation(allocationToken).catch(() => {});
       }
-      setLaunching(false);
-      if (error()) {
-        // Brief delay so the user can read the error toast.
-        setTimeout(() => closePlayer(), 1500);
-      } else {
-        closePlayer();
+    }
+
+    // Series prev/next + auto-play next: re-enter `run` with the
+    // adjacent episode if the Activity asked for one. No allocation
+    // teardown round-trip — the previous episode's slot was just
+    // released above; we'll allocate a fresh one for the next.
+    if (result && !error()) {
+      const sibling = nextEpisodeOpen(o, result.exitReason);
+      if (sibling) {
+        // Update the player store so any reactive consumers stay
+        // in sync (Continue Watching highlight, etc.) and run
+        // again — Activity stays opaque to JS during this tiny
+        // gap; the user sees one player → another.
+        openPlayer(sibling);
+        await run(sibling);
+        return;
       }
+    }
+
+    setLaunching(false);
+    if (error()) {
+      setTimeout(() => closePlayer(), 1500);
+    } else {
+      closePlayer();
     }
   }
 

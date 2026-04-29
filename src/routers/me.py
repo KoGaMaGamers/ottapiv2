@@ -52,3 +52,29 @@ def me(
         provider_exp_date=user.provider_exp_date,
         effective_exp_date=get_effective_exp_date(user),
     )
+
+
+# Native player needs the user's xtream credentials to build live /
+# catchup / preview URLs locally (no slot allocation, no round-trip
+# per zap). Mirrors the legacy Capacitor app's pattern — credentials
+# go to JS in-memory only, then forward to the native plugin via
+# channelData. Never persisted client-side.
+class CredentialsResponse(BaseModel):
+    base_stream_url: str
+    username: str
+    password: str
+    preferred_output: str
+
+
+@router.get("/me/credentials", response_model=CredentialsResponse)
+def me_credentials(
+    user: IPTVUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    provider = db.get(XtreamProvider, user.provider_id) if user.provider_id else None
+    return CredentialsResponse(
+        base_stream_url=provider.base_url.rstrip("/") if provider else "",
+        username=user.username,
+        password=user.password or "",
+        preferred_output=user.preferred_output or "m3u8",
+    )

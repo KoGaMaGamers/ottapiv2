@@ -1,6 +1,7 @@
 import { api, ApiError } from "./client";
 import { authToken, clearAuth, setAuth, type AuthUser } from "../stores/auth";
 import { getMe } from "./me";
+import { clearUserCreds } from "../lib/userCreds";
 
 interface LoginResponse {
   token: string;
@@ -77,4 +78,7 @@ export async function bootstrap(): Promise<AuthUser | null> {
 
 export function logout(): void {
   clearAuth();
+  // Drop the in-memory creds cache so the next user's session
+  // refetches against /api/v1/me/credentials.
+  clearUserCreds();
 }
