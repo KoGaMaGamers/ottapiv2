@@ -670,11 +670,6 @@ export default function Live(): JSX.Element {
       ];
       if (!NAV.includes(e.key)) return;
       e.preventDefault();
-      // Stop other capture-phase listeners (other pages, future
-      // plugins) from also acting on the same press. Belt-and-
-      // suspenders against the Live "back skips zones" symptom that
-      // surfaced once the native player landed.
-      e.stopImmediatePropagation();
 
       const back = e.key === "Escape" || e.key === "Backspace";
 
