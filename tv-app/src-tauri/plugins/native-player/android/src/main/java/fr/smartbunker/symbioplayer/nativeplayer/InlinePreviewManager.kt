@@ -73,6 +73,10 @@ class InlinePreviewManager(private val activity: Activity) {
         viewportWidth: Double, viewportHeight: Double,
     ) {
         if (id.isBlank()) return
+        android.util.Log.d(
+            TAG,
+            "attach[$id]: bounds(x=$x y=$y w=$width h=$height) viewport(${viewportWidth}x${viewportHeight})",
+        )
         activity.runOnUiThread {
             ensureRoot()
             removeOthers(id)
@@ -90,6 +94,10 @@ class InlinePreviewManager(private val activity: Activity) {
                 previewRoot!!.addView(playerView)
                 playerView.translationZ = maxOf(DEFAULT_Z, zIndex).toFloat()
                 playerView.bringToFront()
+                android.util.Log.d(
+                    TAG,
+                    "attach[$id]: NEW session — playerView attached to root (childCount=${previewRoot!!.childCount})",
+                )
                 if (!applyBounds(playerView, x, y, width, height, zIndex, viewportWidth, viewportHeight)) {
                     previewRoot?.post {
                         applyBounds(playerView, x, y, width, height, zIndex, viewportWidth, viewportHeight)
@@ -220,6 +228,14 @@ class InlinePreviewManager(private val activity: Activity) {
             )
             clipChildren = true
             clipToPadding = true
+            // Force the overlay above Tauri's WebView. Capacitor's
+            // WebView paints transparent and sits at default elevation
+            // so addContentView ordering alone was enough in the
+            // legacy app — but Tauri/wry may set its own elevation
+            // (or paint an opaque background) that hides our
+            // PlayerView when both are at default z. A high elevation
+            // here floats the entire overlay tree above the WebView.
+            elevation = 100f
         }
         previewRoot = root
         // addContentView layers the FrameLayout over whatever the host
@@ -227,6 +243,10 @@ class InlinePreviewManager(private val activity: Activity) {
         // sized; preview surfaces inside are then absolute-positioned
         // via leftMargin/topMargin computed from the JS viewport coords.
         activity.addContentView(root, root.layoutParams)
+        android.util.Log.d(
+            TAG,
+            "ensureRoot: created — parent=${root.parent} elevation=${root.elevation}",
+        )
     }
 
     /**
@@ -244,7 +264,13 @@ class InlinePreviewManager(private val activity: Activity) {
         val rootW = previewRoot?.width ?: 0
         val rootH = previewRoot?.height ?: 0
         val hasViewport = viewportWidth > 1.0 && viewportHeight > 1.0
-        if (!hasViewport || rootW <= 1 || rootH <= 1) return false
+        if (!hasViewport || rootW <= 1 || rootH <= 1) {
+            android.util.Log.d(
+                TAG,
+                "applyBounds: BAILED — rootW=$rootW rootH=$rootH viewportW=$viewportWidth viewportH=$viewportHeight",
+            )
+            return false
+        }
 
         val sx = rootW / viewportWidth
         val sy = rootH / viewportHeight
@@ -259,10 +285,18 @@ class InlinePreviewManager(private val activity: Activity) {
         }
         playerView.layoutParams = lp
         playerView.translationZ = maxOf(DEFAULT_Z, zIndex).toFloat()
+        android.util.Log.d(
+            TAG,
+            "applyBounds: input(x=$x y=$y w=$width h=$height) viewport(${viewportWidth}x${viewportHeight}) " +
+                "root(${rootW}x${rootH}) scale(sx=$sx sy=$sy) → " +
+                "frame(left=$px top=$py w=$pw h=$ph) translationZ=${playerView.translationZ} " +
+                "visibility=${playerView.visibility}",
+        )
         return true
     }
 
     companion object {
+        private const val TAG = "InlinePreviewMgr"
         private const val DEFAULT_Z = 1000
     }
 }
