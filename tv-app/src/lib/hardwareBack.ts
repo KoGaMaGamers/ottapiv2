@@ -51,6 +51,23 @@ export function setNativePlayerActive(active: boolean): void {
  */
 const HARDWARE_BACK_KEYS = new Set(["BrowserBack", "GoBack", "Back"]);
 
+/**
+ * Android TV emulator + many real Android TV remotes dispatch BOTH a
+ * `BrowserBack` keydown AND a native `Escape` keydown for a single
+ * back-button press (KEYCODE_BACK gets translated twice — once as the
+ * Browser-back semantic event, once as the system-key Escape). The
+ * symptom: pressing back once on Live drilled 3 levels deep would
+ * skip all 3 levels + zone transitions in one keystroke.
+ *
+ * We swallow native Escape arriving within this grace window after a
+ * synthetic dispatch — the synthetic already gave page handlers a
+ * chance to consume the press, so the second native Escape is a
+ * duplicate.
+ */
+const NATIVE_ESCAPE_GRACE_MS = 100;
+
+let recentSynthAt = 0;
+
 export function installHardwareBackHandler(): void {
   if (installed || typeof window === "undefined") return;
   installed = true;
@@ -58,7 +75,26 @@ export function installHardwareBackHandler(): void {
   window.addEventListener(
     "keydown",
     (e: KeyboardEvent) => {
-      if (!HARDWARE_BACK_KEYS.has(e.key)) return;
+      const isHardwareBack = HARDWARE_BACK_KEYS.has(e.key);
+      const isNativeEscape =
+        e.key === "Escape" &&
+        !((e as unknown as Record<string, unknown>)[SYNTH_FLAG]);
+
+      // Suppress native Escape arriving in the grace window after a
+      // synthetic dispatch (Android TV remote double-fire). Real
+      // desktop Escape presses outside the grace window flow through
+      // normally — components keep working in browser dev.
+      if (
+        isNativeEscape &&
+        recentSynthAt > 0 &&
+        e.timeStamp - recentSynthAt < NATIVE_ESCAPE_GRACE_MS
+      ) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+
+      if (!isHardwareBack) return;
       if ((e as unknown as Record<string, unknown>)[SYNTH_FLAG]) return;
 
       // Always suppress the WebView's default history.back().
@@ -82,6 +118,7 @@ export function installHardwareBackHandler(): void {
         cancelable: true,
       });
       (synth as unknown as Record<string, unknown>)[SYNTH_FLAG] = true;
+      recentSynthAt = e.timeStamp;
       const target = document.activeElement ?? document.body;
       target.dispatchEvent(synth);
     },
