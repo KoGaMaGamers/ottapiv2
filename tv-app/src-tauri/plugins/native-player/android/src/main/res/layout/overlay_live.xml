@@ -1,0 +1,326 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/liveOverlayRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:clickable="true"
+    android:focusable="false">
+
+    <!-- Bottom gradient behind the entire overlay -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="340dp"
+        android:layout_gravity="bottom"
+        android:background="@drawable/bg_gradient_bottom" />
+
+    <!-- All content anchored to bottom -->
+    <LinearLayout
+        android:id="@+id/liveBottomContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:paddingStart="32dp"
+        android:paddingEnd="32dp"
+        android:paddingBottom="24dp">
+
+        <!-- Channel info row: logo, name, clock, close -->
+        <LinearLayout
+            android:id="@+id/topBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingBottom="16dp">
+
+            <ImageView
+                android:id="@+id/channelLogo"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:scaleType="fitCenter"
+                android:layout_marginEnd="14dp" />
+
+            <TextView
+                android:id="@+id/channelName"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/text_primary"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:maxLines="1"
+                android:ellipsize="end" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="end"
+                android:layout_marginEnd="20dp">
+
+                <TextView
+                    android:id="@+id/clockTime"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/text_primary"
+                    android:textSize="18sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/clockDate"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/closeBtn"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:gravity="center"
+                android:text="✕"
+                android:textColor="@color/text_primary"
+                android:textSize="20sp"
+                android:background="@drawable/bg_nav_btn"
+                android:focusable="true"
+                android:clickable="true" />
+        </LinearLayout>
+
+        <!-- EPG loading -->
+        <TextView
+            android:id="@+id/epgLoading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginBottom="8dp"
+            android:text="@string/loading_epg"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <!-- EPG no-data -->
+        <TextView
+            android:id="@+id/epgNoData"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginBottom="8dp"
+            android:text="@string/no_epg"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <!-- EPG timeline section -->
+        <LinearLayout
+            android:id="@+id/epgSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <!-- EPG timeline row -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <!-- Nav left -->
+                <TextView
+                    android:id="@+id/epgNavLeft"
+                    android:layout_width="32dp"
+                    android:layout_height="52dp"
+                    android:gravity="center"
+                    android:text="◄"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp"
+                    android:background="@drawable/bg_nav_btn"
+                    android:focusable="true"
+                    android:clickable="true"
+                    android:layout_marginEnd="6dp" />
+
+                <!-- EPG strip -->
+                <LinearLayout
+                    android:id="@+id/epgStrip"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical" />
+
+                <!-- Nav right -->
+                <TextView
+                    android:id="@+id/epgNavRight"
+                    android:layout_width="32dp"
+                    android:layout_height="52dp"
+                    android:gravity="center"
+                    android:text="►"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp"
+                    android:background="@drawable/bg_nav_btn"
+                    android:focusable="true"
+                    android:clickable="true"
+                    android:layout_marginStart="6dp" />
+
+                <!-- Channel zap column -->
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:layout_marginStart="10dp">
+
+                    <TextView
+                        android:id="@+id/zapUp"
+                        android:layout_width="36dp"
+                        android:layout_height="26dp"
+                        android:gravity="center"
+                        android:text="▲"
+                        android:textColor="@color/text_primary"
+                        android:textSize="13sp"
+                        android:background="@drawable/bg_nav_btn"
+                        android:focusable="true"
+                        android:clickable="true" />
+
+                    <TextView
+                        android:id="@+id/zapDown"
+                        android:layout_width="36dp"
+                        android:layout_height="26dp"
+                        android:gravity="center"
+                        android:text="▼"
+                        android:textColor="@color/text_primary"
+                        android:textSize="13sp"
+                        android:background="@drawable/bg_nav_btn"
+                        android:focusable="true"
+                        android:clickable="true"
+                        android:layout_marginTop="2dp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- EPG detail panel -->
+            <LinearLayout
+                android:id="@+id/epgDetailPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:layout_marginTop="10dp"
+                android:visibility="gone">
+
+                <!-- Meta row: time, badges, catchup -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/epgDetailTime"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp"
+                        android:layout_marginEnd="10dp" />
+
+                    <TextView
+                        android:id="@+id/epgLiveBadge"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="● LIVE"
+                        android:textColor="@color/text_primary"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:background="@drawable/bg_badge_live"
+                        android:layout_marginEnd="8dp"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/epgFutureBadge"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="UPCOMING"
+                        android:textColor="@color/text_primary"
+                        android:textSize="11sp"
+                        android:background="@drawable/bg_badge_upcoming"
+                        android:layout_marginEnd="8dp"
+                        android:visibility="gone" />
+
+                    <View
+                        android:layout_width="0dp"
+                        android:layout_height="0dp"
+                        android:layout_weight="1" />
+
+                    <TextView
+                        android:id="@+id/catchupBtn"
+                        android:layout_width="wrap_content"
+                        android:layout_height="32dp"
+                        android:gravity="center"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:text="▶ Catchup"
+                        android:textColor="@color/text_primary"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:background="@drawable/bg_catchup_btn"
+                        android:focusable="true"
+                        android:clickable="true"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/backToLiveBtn"
+                        android:layout_width="wrap_content"
+                        android:layout_height="32dp"
+                        android:gravity="center"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:text="⏹ Back to Live"
+                        android:textColor="@color/text_primary"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:background="@drawable/bg_nav_btn"
+                        android:focusable="true"
+                        android:clickable="true"
+                        android:visibility="gone" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/epgDetailTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp"
+                    android:textStyle="bold"
+                    android:maxLines="2"
+                    android:ellipsize="end"
+                    android:layout_marginTop="5dp" />
+
+                <TextView
+                    android:id="@+id/epgDetailDesc"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp"
+                    android:maxLines="3"
+                    android:ellipsize="end"
+                    android:layout_marginTop="3dp"
+                    android:visibility="gone" />
+
+                <!-- Progress bar -->
+                <FrameLayout
+                    android:id="@+id/epgProgressContainer"
+                    android:layout_width="match_parent"
+                    android:layout_height="3dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@color/epg_progress_bg"
+                    android:visibility="gone">
+
+                    <View
+                        android:id="@+id/epgProgressFill"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:background="@color/epg_progress_fill" />
+                </FrameLayout>
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>

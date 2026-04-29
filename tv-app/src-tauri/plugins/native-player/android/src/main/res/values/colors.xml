@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#141414</color>
+    <color name="colorPrimaryDark">#000000</color>
+    <color name="colorAccent">#E50914</color>
+
+    <color name="overlay_bg">#CC141414</color>
+    <color name="overlay_bg_solid">#E6141414</color>
+    <color name="text_primary">#FFFFFFFF</color>
+    <color name="text_secondary">#B3B3B3</color>
+    <color name="live_badge">#E50914</color>
+    <color name="catchup_btn">#0071EB</color>
+    <color name="epg_slot_bg">#33FFFFFF</color>
+    <color name="epg_slot_selected">#55FFFFFF</color>
+    <color name="epg_slot_live">#33E50914</color>
+    <color name="epg_progress_bg">#33FFFFFF</color>
+    <color name="epg_progress_fill">#E50914</color>
+    <color name="btn_bg">#44FFFFFF</color>
+    <color name="btn_focused">#66FFFFFF</color>
+    <color name="glass_panel">#3D101215</color>
+    <color name="glass_panel_strong">#88101215</color>
+    <color name="glass_stroke">#66FFFFFF</color>
+    <color name="glass_stroke_soft">#33FFFFFF</color>
+    <color name="focus_accent">#FF2F90FF</color>
+</resources>

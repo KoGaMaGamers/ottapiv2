@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Lifted from legacy values/strings.xml — only the strings that
+         the lifted Kotlin actually references. -->
+    <string name="stream_unavailable">Stream unavailable</string>
+    <string name="retry">Retry</string>
+    <string name="loading_epg">Loading EPG…</string>
+    <string name="no_epg">No EPG information available</string>
+</resources>

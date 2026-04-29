@@ -1,0 +1,6 @@
+"$schema" = "schemas/schema.json"
+
+[[permission]]
+identifier = "allow-start-player"
+description = "Allow JS to launch the fullscreen native ExoPlayer activity."
+commands.allow = ["start_player"]

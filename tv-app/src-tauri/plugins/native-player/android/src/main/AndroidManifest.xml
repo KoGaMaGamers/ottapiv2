@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PlayerActivity is the fullscreen ExoPlayer activity launched by the
+  plugin. We declare it landscape-only with hardware acceleration so it
+  matches the legacy Capacitor host's manifest, and exported=false
+  because only the plugin (same app process) ever launches it.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <activity
+            android:name="fr.smartbunker.symbioplayer.nativeplayer.PlayerActivity"
+            android:configChanges="keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            android:theme="@style/PlayerTheme" />
+    </application>
+
+</manifest>
