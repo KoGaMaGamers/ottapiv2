@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Symbioplayer native (Android) player plugin — wraps ExoPlayer for live + VOD playback."
 authors = ["d4nt1"]
+links = "tauri-plugin-native-player"
 
 [dependencies]
 tauri = { version = "2", features = [] }

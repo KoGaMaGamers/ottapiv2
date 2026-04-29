@@ -2,78 +2,113 @@ package fr.smartbunker.symbioplayer.nativeplayer
 
 import android.app.Activity
 import android.content.Intent
+import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResult
-import app.tauri.annotation.ActivityCallback
+import androidx.activity.result.ActivityResultCallback
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
+import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
-import app.tauri.plugin.Invoke
 
 /**
- * JS-side argument shape for `start_player`. Must mirror the
- * `StartPlayerArgs` Rust struct's serde rename camel-case so Tauri's
- * JSON serialiser routes them through cleanly.
- *
- * Defaults match the legacy Capacitor plugin's behaviour so the JS
- * caller can omit anything but `url`.
+ * JS-side argument shape for `start_player`. Mirrors the Rust
+ * `StartPlayerArgs` serde camel-case so Tauri's JSON router maps
+ * cleanly. Defaults match the legacy Capacitor plugin so callers can
+ * omit anything but `url`.
  */
 @InvokeArg
 class StartPlayerArgs {
     lateinit var url: String
     var type: String = "live"
-    var title: String = ""
-    var subtitle: String = ""
-    var channelData: String = "{}"
+    var title: String? = ""
+    var subtitle: String? = ""
+    var channelData: String? = "{}"
     var resumePosition: Long = 0L
 }
 
 /**
- * Tauri 2.0 port of the legacy `OttPlayerPlugin#startPlayer` —
- * launches `PlayerActivity` (the lifted ExoPlayer-based fullscreen
- * player) via `startActivityForResult` and pipes the close result back
- * to the JS caller as a JSObject.
+ * Tauri 2.0 native-player plugin entry. Launches `PlayerActivity`
+ * (the lifted ExoPlayer fullscreen player) and pipes the result back
+ * to the JS caller.
  *
- * Drops all 6 inline-preview methods from the legacy plugin
- * (attach/update/play/stop/detach/stopAll); the WebView's `<video>`
- * preview is a better fit for the hero fade-out effect and the user
- * explicitly chose to keep it.
+ * Registration note:
+ *   Tauri constructs plugins when the host WryActivity is already in
+ *   RESUMED state. The lifecycle-aware `registerForActivityResult`
+ *   overload throws IllegalStateException if called after STARTED.
+ *   We use the non-lifecycle `ActivityResultRegistry.register(key,
+ *   contract, callback)` overload instead — it skips the lifecycle
+ *   check and works at any point. We must manually unregister in
+ *   onDestroy to avoid leaks.
  */
 @TauriPlugin
 class NativePlayerPlugin(private val activity: Activity) : Plugin(activity) {
 
+    /** Pending Invoke kept across the activity-launch round-trip. */
+    private var pendingInvoke: Invoke? = null
+
+    private val playerLauncher: ActivityResultLauncher<Intent>
+
+    init {
+        val componentActivity = activity as ComponentActivity
+        // Non-lifecycle overload: register(key, contract, callback)
+        // Does NOT enforce "must register before STARTED" — safe to
+        // call at any Activity lifecycle state.
+        playerLauncher = componentActivity.activityResultRegistry.register(
+            "native-player-launch",
+            ActivityResultContracts.StartActivityForResult(),
+            ActivityResultCallback { result -> handlePlayerResult(result) }
+        )
+    }
+
+    override fun onDestroy() {
+        playerLauncher.unregister()
+        super.onDestroy()
+    }
+
     @Command
     fun startPlayer(invoke: Invoke) {
-        val args = invoke.parseArgs(StartPlayerArgs::class.java)
+        try {
+            val args = invoke.parseArgs(StartPlayerArgs::class.java)
 
-        if (args.url.isEmpty()) {
-            invoke.reject("Missing stream URL")
-            return
+            if (args.url.isEmpty()) {
+                invoke.reject("Missing stream URL")
+                return
+            }
+
+            if (pendingInvoke != null) {
+                invoke.reject("Player already launching")
+                return
+            }
+
+            val intent = Intent(activity, PlayerActivity::class.java).apply {
+                putExtra("url", args.url)
+                putExtra("type", args.type ?: "live")
+                putExtra("title", args.title ?: "")
+                putExtra("subtitle", args.subtitle ?: "")
+                putExtra("channelData", args.channelData ?: "{}")
+                putExtra("resumePosition", args.resumePosition)
+            }
+
+            pendingInvoke = invoke
+            playerLauncher.launch(intent)
+        } catch (e: Exception) {
+            invoke.reject("Native player error: ${e.message}")
         }
-
-        val intent = Intent(activity, PlayerActivity::class.java).apply {
-            putExtra("url", args.url)
-            putExtra("type", args.type)
-            putExtra("title", args.title)
-            putExtra("subtitle", args.subtitle)
-            putExtra("channelData", args.channelData)
-            putExtra("resumePosition", args.resumePosition)
-        }
-
-        // Tauri 2.0 mirrors Capacitor's pattern: pass the Invoke + a
-        // method name; the framework reflectively dispatches to the
-        // matching @ActivityCallback when the launched Activity returns.
-        startActivityForResult(invoke, intent, "handlePlayerResult")
     }
 
     /**
-     * Receives PlayerActivity's setResult() data and forwards it to
-     * JS. Field names match the legacy plugin's JSObject keys so the
-     * frontend's bindings keep working unchanged.
+     * Fires when PlayerActivity finishes. Mirrors the legacy
+     * `handlePlayerResult` JSObject shape exactly so the JS bindings
+     * keep working unchanged.
      */
-    @ActivityCallback
-    fun handlePlayerResult(invoke: Invoke, result: ActivityResult) {
+    private fun handlePlayerResult(result: ActivityResult) {
+        val invoke = pendingInvoke ?: return
+        pendingInvoke = null
+
         val ret = JSObject()
         if (result.resultCode == Activity.RESULT_OK) {
             val data = result.data
