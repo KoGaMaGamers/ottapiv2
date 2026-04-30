@@ -52,6 +52,13 @@ app.add_middleware(
         "https://tauri.localhost",  # iOS / future-proof
         "http://localhost:5173",    # browser dev (Vite default)
         "http://localhost:1420",    # Tauri desktop default
+        # Legacy tv_app_v2 (Capacitor) WebView origins — Capacitor 5+ on
+        # Android serves the bundle from https://localhost by default;
+        # iOS uses capacitor://localhost. Both must be allowlisted for
+        # the legacy compat shim's cross-origin fetch to work.
+        "https://localhost",
+        "http://localhost",
+        "capacitor://localhost",
     ],
     allow_credentials=True,
     allow_methods=["*"],
