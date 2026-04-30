@@ -452,6 +452,32 @@ def legacy_series_categories(
 _MAX_ROWS = 2000  # cap so a missing limit can't fetch the whole catalog
 
 
+# Sort presets exposed to the legacy client. Each maps to a (col, ascending)
+# pair; the query then applies the standard "IS NULL ASC" trick to keep
+# nulls sorted to the end (MySQL doesn't support NULLS LAST natively).
+def _movie_sort_clause(name: Optional[str]):
+    col_map = {
+        "added_desc": (MovieStream.added, False),
+        "year_desc": (MovieStream.year, False),
+        "rating_desc": (MovieStream.rating_5based, False),
+        "popularity_desc": (MovieStream.tmdb_popularity, False),
+        "name_asc": (MovieStream.name, True),
+    }
+    col, asc = col_map.get(name or "added_desc", col_map["added_desc"])
+    return col.is_(None), col.asc() if asc else col.desc()
+
+
+def _series_sort_clause(name: Optional[str]):
+    col_map = {
+        "last_modified_desc": (SeriesStream.last_modified, False),
+        "rating_desc": (SeriesStream.rating_5based, False),
+        "popularity_desc": (SeriesStream.tmdb_popularity, False),
+        "name_asc": (SeriesStream.name, True),
+    }
+    col, asc = col_map.get(name or "last_modified_desc", col_map["last_modified_desc"])
+    return col.is_(None), col.asc() if asc else col.desc()
+
+
 @router.get("/api/v1/user/streams/live")
 def legacy_live(
     category_id: Optional[int] = Query(None),
@@ -484,6 +510,10 @@ def legacy_vod(
     category_ids: Optional[str] = Query(None, description="comma-separated"),
     year: Optional[int] = Query(None),
     genre: Optional[str] = Query(None, description="genre name (legacy)"),
+    sort: Optional[str] = Query(
+        None,
+        description="added_desc | year_desc | rating_desc | popularity_desc | name_asc (default: added_desc)",
+    ),
     limit: int = Query(20, ge=1, le=_MAX_ROWS),
     offset: int = Query(0, ge=0),
     user: IPTVUser = Depends(get_current_user),
@@ -518,7 +548,7 @@ def legacy_vod(
              .join(TMDBGenre, TMDBGenre.id == movie_stream_genre_association.c.genre_id)
              .filter(TMDBGenre.name.ilike(genre))
         )
-    q = q.order_by(MovieStream.added.is_(None), MovieStream.added.desc())
+    q = q.order_by(*_movie_sort_clause(sort))
     rows = q.offset(offset).limit(limit).all()
     return [_movie_legacy_shape(m) for m in rows]
 
@@ -529,6 +559,10 @@ def legacy_series(
     language: Optional[str] = Query(None),
     category_id: Optional[int] = Query(None),
     genre: Optional[str] = Query(None, description="genre name (legacy)"),
+    sort: Optional[str] = Query(
+        None,
+        description="last_modified_desc | rating_desc | popularity_desc | name_asc (default: last_modified_desc)",
+    ),
     limit: int = Query(40, ge=1, le=_MAX_ROWS),
     offset: int = Query(0, ge=0),
     user: IPTVUser = Depends(get_current_user),
@@ -554,7 +588,7 @@ def legacy_series(
              .join(TMDBGenre, TMDBGenre.id == series_stream_genre_association.c.genre_id)
              .filter(TMDBGenre.name.ilike(genre))
         )
-    q = q.order_by(SeriesStream.last_modified.is_(None), SeriesStream.last_modified.desc())
+    q = q.order_by(*_series_sort_clause(sort))
     rows = q.offset(offset).limit(limit).all()
     return [_series_legacy_shape(s) for s in rows]
 
