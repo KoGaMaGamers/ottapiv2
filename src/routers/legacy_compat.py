@@ -135,6 +135,7 @@ def _movie_legacy_shape(m: MovieStream) -> Dict[str, Any]:
         "id": m.id,
         "xtream_id": m.xtream_id,
         "name": m.name,
+        "o_name": m.o_name,
         "stream_type": "movie",
         "container_extension": m.container_extension,
         "tmdb_id": m.tmdb_id,
@@ -151,10 +152,12 @@ def _movie_legacy_shape(m: MovieStream) -> Dict[str, Any]:
         "release_date": _date_iso(m.releasedate) or (str(m.year) if m.year else None),
         "stream_icon": m.stream_icon or m.cover_big,
         "cover_big": m.cover_big,
+        "backdrop_path": m.backdrop_path,
         "added": m.added.isoformat() if m.added else None,
         # Extras useful to legacy detail page:
         "director": m.director,
         "country": m.country,
+        "youtube_trailer": m.youtube_trailer,
         "category_id": m.category_id,
         "movie_category_id": m.movie_category_id,
     }
