@@ -10,6 +10,7 @@ from .routers import (
     admin_sync,
     auth,
     catalog,
+    legacy_compat,
     me,
     play,
     recommendations,
@@ -65,6 +66,7 @@ app.include_router(catalog.router)
 app.include_router(play.router)
 app.include_router(recommendations.router)
 app.include_router(subtitles.router)
+app.include_router(legacy_compat.router)
 
 
 @app.get("/health")
