@@ -515,7 +515,8 @@ def legacy_vod(
     category_id: Optional[int] = Query(None),
     category_ids: Optional[str] = Query(None, description="comma-separated"),
     year: Optional[int] = Query(None),
-    genre: Optional[str] = Query(None, description="genre name (legacy)"),
+    genre: Optional[str] = Query(None, description="genre name (legacy, ILIKE match — prefer genre_id)"),
+    genre_id: Optional[int] = Query(None, description="TMDBGenre.id (numeric, exact match)"),
     sort: Optional[str] = Query(
         None,
         description="added_desc | year_desc | rating_desc | popularity_desc | name_asc (default: added_desc)",
@@ -545,8 +546,16 @@ def legacy_vod(
             q = q.filter(MovieStream.movie_category_id.in_(ids))
     if year is not None:
         q = q.filter(MovieStream.year == year)
-    # genre by name → resolve through the relationship
-    if genre:
+    # Genre filter — prefer numeric genre_id (exact, indexed); fall
+    # back to name ILIKE for older clients that still pass `genre`.
+    if genre_id is not None:
+        from ..models import movie_stream_genre_association
+        q = (
+            q.join(movie_stream_genre_association,
+                   movie_stream_genre_association.c.movie_stream_id == MovieStream.id)
+             .filter(movie_stream_genre_association.c.genre_id == genre_id)
+        )
+    elif genre:
         from ..models import TMDBGenre, movie_stream_genre_association
         q = (
             q.join(movie_stream_genre_association,
@@ -564,7 +573,8 @@ def legacy_series(
     search: Optional[str] = Query(None),
     language: Optional[str] = Query(None),
     category_id: Optional[int] = Query(None),
-    genre: Optional[str] = Query(None, description="genre name (legacy)"),
+    genre: Optional[str] = Query(None, description="genre name (legacy, ILIKE match — prefer genre_id)"),
+    genre_id: Optional[int] = Query(None, description="TMDBGenre.id (numeric, exact match)"),
     sort: Optional[str] = Query(
         None,
         description="last_modified_desc | rating_desc | popularity_desc | name_asc (default: last_modified_desc)",
@@ -586,7 +596,16 @@ def legacy_series(
         q = q.filter(SeriesStream.language == language.upper())
     if category_id is not None:
         q = q.filter(SeriesStream.series_category_id == category_id)
-    if genre:
+    # Genre filter — prefer numeric genre_id (exact, indexed); fall
+    # back to name ILIKE for older clients that still pass `genre`.
+    if genre_id is not None:
+        from ..models import series_stream_genre_association
+        q = (
+            q.join(series_stream_genre_association,
+                   series_stream_genre_association.c.series_stream_id == SeriesStream.id)
+             .filter(series_stream_genre_association.c.genre_id == genre_id)
+        )
+    elif genre:
         from ..models import TMDBGenre, series_stream_genre_association
         q = (
             q.join(series_stream_genre_association,
