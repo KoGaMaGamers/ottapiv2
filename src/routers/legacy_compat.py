@@ -576,6 +576,7 @@ def legacy_series(
     search: Optional[str] = Query(None),
     language: Optional[str] = Query(None),
     category_id: Optional[int] = Query(None),
+    category_ids: Optional[str] = Query(None, description="comma-separated SerieCategory.id list"),
     genre: Optional[str] = Query(None, description="genre name (legacy, ILIKE match — prefer genre_id)"),
     genre_id: Optional[int] = Query(None, description="TMDBGenre.id (numeric, exact match)"),
     sort: Optional[str] = Query(
@@ -599,6 +600,10 @@ def legacy_series(
         q = q.filter(SeriesStream.language == language.upper())
     if category_id is not None:
         q = q.filter(SeriesStream.series_category_id == category_id)
+    if category_ids:
+        ids = [int(t) for t in category_ids.split(",") if t.strip().isdigit()]
+        if ids:
+            q = q.filter(SeriesStream.series_category_id.in_(ids))
     # Genre filter — prefer numeric genre_id (exact, indexed); fall
     # back to name ILIKE for older clients that still pass `genre`.
     if genre_id is not None:
