@@ -143,6 +143,10 @@ def _movie_legacy_shape(m: MovieStream) -> Dict[str, Any]:
         "plot": m.description,
         "cast": m.actors,
         "genre": ", ".join(genres_list) if genres_list else None,
+        # Also expose the list form so the legacy normalizer can fill
+        # `genres` on cards / playback-history entries — used as
+        # recommendation seeds via the genre-overlap signal.
+        "genres": genres_list,
         "language": m.language,
         "release_date": _date_iso(m.releasedate) or (str(m.year) if m.year else None),
         "stream_icon": m.stream_icon or m.cover_big,
