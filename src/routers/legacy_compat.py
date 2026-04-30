@@ -518,7 +518,7 @@ def legacy_vod(
              .join(TMDBGenre, TMDBGenre.id == movie_stream_genre_association.c.genre_id)
              .filter(TMDBGenre.name.ilike(genre))
         )
-    q = q.order_by(MovieStream.added.desc().nulls_last())
+    q = q.order_by(MovieStream.added.is_(None), MovieStream.added.desc())
     rows = q.offset(offset).limit(limit).all()
     return [_movie_legacy_shape(m) for m in rows]
 
@@ -554,7 +554,7 @@ def legacy_series(
              .join(TMDBGenre, TMDBGenre.id == series_stream_genre_association.c.genre_id)
              .filter(TMDBGenre.name.ilike(genre))
         )
-    q = q.order_by(SeriesStream.last_modified.desc().nulls_last())
+    q = q.order_by(SeriesStream.last_modified.is_(None), SeriesStream.last_modified.desc())
     rows = q.offset(offset).limit(limit).all()
     return [_series_legacy_shape(s) for s in rows]
 
@@ -994,7 +994,7 @@ def legacy_similar(
             .filter(MovieStream.tmdb_id != tmdb_id)
             .filter(TMDBGenre.name.in_(seed_genres))
             .group_by(MovieStream.id)
-            .order_by(MovieStream.tmdb_popularity.desc().nulls_last())
+            .order_by(MovieStream.tmdb_popularity.is_(None), MovieStream.tmdb_popularity.desc())
         )
         total = q.count()
         rows = q.offset((page - 1) * limit).limit(limit).all()
@@ -1011,7 +1011,7 @@ def legacy_similar(
             .filter(SeriesStream.tmdb_id != tmdb_id)
             .filter(TMDBGenre.name.in_(seed_genres))
             .group_by(SeriesStream.id)
-            .order_by(SeriesStream.tmdb_popularity.desc().nulls_last())
+            .order_by(SeriesStream.tmdb_popularity.is_(None), SeriesStream.tmdb_popularity.desc())
         )
         total = q.count()
         rows = q.offset((page - 1) * limit).limit(limit).all()
@@ -1139,7 +1139,7 @@ def legacy_titles(
             col = MovieStream.tmdb_popularity
         else:
             col = MovieStream.year
-        q = q.order_by(col.desc().nulls_last() if order == "desc" else col.asc().nulls_last())
+        q = q.order_by(col.is_(None), col.desc() if order == "desc" else col.asc())
         for m in q.limit(limit).all():
             out.append({
                 "id": f"tmdb_{m.tmdb_id}" if m.tmdb_id else f"ott_{m.id}",
@@ -1164,7 +1164,7 @@ def legacy_titles(
             col = SeriesStream.tmdb_popularity
         else:
             col = SeriesStream.last_modified
-        q = q.order_by(col.desc().nulls_last() if order == "desc" else col.asc().nulls_last())
+        q = q.order_by(col.is_(None), col.desc() if order == "desc" else col.asc())
         for s in q.limit(limit).all():
             year_str = None
             if s.release_date:
