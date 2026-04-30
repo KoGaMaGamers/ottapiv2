@@ -49,3 +49,14 @@ TMDB_BEARER_TOKEN = _get("TMDB_BEARER_TOKEN", "")
 TMDB_API_KEY = _get("TMDB_API_KEY", "")
 
 ADMIN_SECRET = _get("ADMIN_SECRET", "")
+
+# ── Sport-events curation (Claude Code skill) ──────────────────────────────
+# The scheduler shells out to `claude -p` which loads
+# .claude/skills/sport-events/SKILL.md and writes a fresh batch of
+# upcoming live sport events into the DB. See migration/10 in tv_app_v2
+# for design notes.
+SPORT_EVENTS_REFRESH_INTERVAL_HOURS = _get_int("SPORT_EVENTS_REFRESH_INTERVAL_HOURS", 72)
+CLAUDE_BIN = _get("CLAUDE_BIN", "/root/.local/bin/claude")
+CLAUDE_SUBPROCESS_TIMEOUT_SEC = _get_int("CLAUDE_SUBPROCESS_TIMEOUT_SEC", 900)
+ANTHROPIC_API_KEY = _get("ANTHROPIC_API_KEY", "")
+SPORT_EVENTS_STATIC_DIR = _get("SPORT_EVENTS_STATIC_DIR", "/home/ottapi/static/sport-events")

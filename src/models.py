@@ -498,3 +498,82 @@ class Subtitle(Base):
             name="uq_subtitle_tmdb_lang_ep",
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Sport events — Claude-curated upcoming live sport broadcasts.
+# Populated by the periodic `sport-events` skill (see
+# .claude/skills/sport-events/SKILL.md) and exposed via
+# /api/v1/sport-events for the Home hero rail.
+# ---------------------------------------------------------------------------
+
+class SportEvent(Base):
+    __tablename__ = "sport_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_id = Column(Integer, nullable=False, index=True)
+
+    title = Column(String(255), nullable=False)
+    description = Column(Text)
+    sport = Column(String(64), nullable=False)
+    league = Column(String(128))
+    home_team = Column(String(128))
+    away_team = Column(String(128))
+
+    start_utc = Column(DateTime, nullable=False, index=True)
+    end_utc = Column(DateTime, nullable=False, index=True)
+
+    broadcaster_name = Column(String(128), nullable=False)
+    broadcaster_country = Column(String(8))
+
+    cover_url = Column(String(1024))
+    source_url = Column(String(1024), nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class LiveStreamAlias(Base):
+    """Self-improving broadcaster→channel match cache.
+
+    Populated by ingest.py when a fuzzy resolve succeeds; subsequent
+    reads short-circuit to an exact lookup.
+    """
+    __tablename__ = "live_stream_aliases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(Integer, ForeignKey("xtream_providers.id"), nullable=False)
+    alias = Column(String(128), nullable=False)
+    live_stream_id = Column(Integer, ForeignKey("live_streams.id"), nullable=False)
+    confidence = Column(Float, default=1.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("provider_id", "alias", name="uq_alias_provider"),
+        Index("ix_alias_provider_alias", "provider_id", "alias"),
+    )
+
+
+class SportEventsRun(Base):
+    """One row per scheduler invocation; surfaces success/failure to the
+    admin endpoint without parsing logs."""
+    __tablename__ = "sport_events_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    finished_at = Column(DateTime)
+    status = Column(String(32), default="running", nullable=False)
+    triggered_by = Column(String(32), default="schedule")
+    events_written = Column(Integer, default=0)
+    error = Column(Text)
+
+
+class KvSettings(Base):
+    """Tiny generic key/value store. v1 use case: the
+    `sport_events_current_batch` pointer; future callers welcome.
+    """
+    __tablename__ = "kv_settings"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -1,12 +1,16 @@
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
+from .config import SPORT_EVENTS_STATIC_DIR
 from .routers import (
     admin_providers,
+    admin_sport_events,
     admin_sync,
     auth,
     catalog,
@@ -14,6 +18,7 @@ from .routers import (
     me,
     play,
     recommendations,
+    sport_events,
     subtitles,
 )
 from .services.scheduler import start_scheduler, stop_scheduler
@@ -67,13 +72,20 @@ app.add_middleware(
 
 app.include_router(admin_sync.router)
 app.include_router(admin_providers.router)
+app.include_router(admin_sport_events.router)
 app.include_router(auth.router)
 app.include_router(me.router)
 app.include_router(catalog.router)
 app.include_router(play.router)
 app.include_router(recommendations.router)
+app.include_router(sport_events.router)
 app.include_router(subtitles.router)
 app.include_router(legacy_compat.router)
+
+# Serve composite cover JPGs the sport-events skill generates.
+_static_root = os.path.dirname(SPORT_EVENTS_STATIC_DIR.rstrip("/"))
+os.makedirs(SPORT_EVENTS_STATIC_DIR, exist_ok=True)
+app.mount("/static", StaticFiles(directory=_static_root), name="static")
 
 
 @app.get("/health")
