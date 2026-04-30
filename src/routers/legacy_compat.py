@@ -64,6 +64,8 @@ from ..services.donor_service import (
 )
 from . import auth as auth_module
 from . import catalog as catalog_module
+from . import recommendations as recommendations_module
+from .recommendations import RecommendationsRequest
 from .auth import LoginRequest, LoginResponse, get_current_user, login as new_login
 from .catalog import (
     EpisodeOut,
@@ -979,6 +981,40 @@ def legacy_search_global(
 #
 # Legacy is single-seed paginated. New /recommendations is multi-seed,
 # top-N. We translate by issuing a single-seed POST and slicing.
+
+# Tauri-style multi-seed recommendations — proxies the new
+# /api/v1/recommendations endpoint and reshapes the response into the
+# legacy field-shape so HomePage's "You should also like" row can use it.
+@router.post("/api/v1/user/streams/recommendations")
+def legacy_recommendations(
+    body: RecommendationsRequest,
+    user: IPTVUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    response = recommendations_module.get_recommendations(body=body, db=db, user=user)
+    movie_ids = [m.id for m in response.movies]
+    series_ids = [s.id for s in response.series]
+    movie_rows = (
+        db.query(MovieStream)
+        .options(selectinload(MovieStream.genres))
+        .filter(MovieStream.id.in_(movie_ids))
+        .all()
+        if movie_ids else []
+    )
+    series_rows = (
+        db.query(SeriesStream)
+        .options(selectinload(SeriesStream.genres))
+        .filter(SeriesStream.id.in_(series_ids))
+        .all()
+        if series_ids else []
+    )
+    movie_by_id = {m.id: m for m in movie_rows}
+    series_by_id = {s.id: s for s in series_rows}
+    return {
+        "movies": [_movie_legacy_shape(movie_by_id[i]) for i in movie_ids if i in movie_by_id],
+        "series": [_series_legacy_shape(series_by_id[i]) for i in series_ids if i in series_by_id],
+    }
+
 
 @router.get("/api/v1/user/streams/similar")
 def legacy_similar(
