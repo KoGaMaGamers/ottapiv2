@@ -260,13 +260,25 @@ def sweep_finished_events() -> int:
             )
             .all()
         )
+        # /static/ root holds both composite covers (sport-events/) and
+        # mirrored remote covers (sport-covers/). Unlink whichever the
+        # row points at.
+        static_root = os.path.dirname(SPORT_EVENTS_STATIC_DIR.rstrip("/"))
+        covers_dir = os.path.join(static_root, "sport-covers")
         for ev in doomed:
-            if ev.cover_url and ev.cover_url.startswith("/static/sport-events/"):
-                disk = os.path.join(SPORT_EVENTS_STATIC_DIR, os.path.basename(ev.cover_url))
-                try:
-                    os.unlink(disk)
-                except OSError:
-                    pass
+            if ev.cover_url:
+                if ev.cover_url.startswith("/static/sport-events/"):
+                    disk_dir = SPORT_EVENTS_STATIC_DIR
+                elif ev.cover_url.startswith("/static/sport-covers/"):
+                    disk_dir = covers_dir
+                else:
+                    disk_dir = None
+                if disk_dir:
+                    disk = os.path.join(disk_dir, os.path.basename(ev.cover_url))
+                    try:
+                        os.unlink(disk)
+                    except OSError:
+                        pass
             db.delete(ev)
             n += 1
         db.commit()

@@ -50,7 +50,15 @@ STATIC_DIR = os.getenv(
     "SPORT_EVENTS_STATIC_DIR",
     "/home/ottapi/static/sport-events",
 )
+# Sibling dir for covers we mirror locally from external URLs (Wikimedia,
+# formula1.com, etc). Same /static/ mount serves both, so the public URL
+# is always same-origin regardless of where the original art lives.
+COVERS_DIR = os.path.join(
+    os.path.dirname(STATIC_DIR.rstrip("/")),
+    "sport-covers",
+)
 HEAD_TIMEOUT = 6
+GET_TIMEOUT = 15
 COMPOSE_SCRIPT = os.path.join(os.path.dirname(__file__), "compose_cover.py")
 
 WINDOW_MIN = timedelta(hours=6)       # past tolerance
@@ -215,6 +223,56 @@ def _compose_cover(home_url: str, away_url: str, slug: str) -> Optional[str]:
     return out.get("public_url")
 
 
+_CTYPE_EXT = (
+    ("png",  "png"),
+    ("webp", "webp"),
+    ("gif",  "gif"),
+    ("jpeg", "jpg"),
+    ("jpg",  "jpg"),
+)
+
+
+def _localize_cover(url: str, slug: str) -> Optional[str]:
+    """Mirror an external cover URL to /static/sport-covers/<slug>.<ext>.
+
+    Returns the public path on success, None on any failure (caller
+    should fall back to the remote URL — that's still better than no
+    cover at all). Hotlink-protected hosts and slow CDNs are exactly
+    why we mirror: the device WebView hits a same-origin file and
+    never blocks the hero on a third-party fetch.
+    """
+    if not url:
+        return None
+    try:
+        os.makedirs(COVERS_DIR, exist_ok=True)
+    except OSError:
+        return None
+    try:
+        with requests.get(
+            url,
+            headers=HTTP_HEADERS,
+            allow_redirects=True,
+            timeout=GET_TIMEOUT,
+            stream=True,
+        ) as r:
+            if not (200 <= r.status_code < 400):
+                return None
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            ext = "jpg"
+            for needle, e in _CTYPE_EXT:
+                if needle in ctype:
+                    ext = e
+                    break
+            out_path = os.path.join(COVERS_DIR, f"{slug}.{ext}")
+            with open(out_path, "wb") as fh:
+                for chunk in r.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        fh.write(chunk)
+    except (requests.RequestException, OSError):
+        return None
+    return f"/static/sport-covers/{slug}.{ext}"
+
+
 # ---------------------------------------------------------------------------
 # Broadcaster → channel matching (mirrors plan §5)
 # ---------------------------------------------------------------------------
@@ -317,22 +375,34 @@ def _write_pointer(db, value: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _sweep_finished(db, now: datetime) -> int:
-    """Delete events whose end_utc has passed; unlink composite covers
-    on disk. Returns count deleted."""
+    """Delete events whose end_utc has passed; unlink any local cover
+    files we own (composite or mirrored). Returns count deleted."""
     finished = db.query(SportEvent).filter(SportEvent.end_utc < now).all()
     n = 0
     for ev in finished:
-        # Best-effort: unlink the composite JPG if the URL points at our
-        # static dir.
-        if ev.cover_url and ev.cover_url.startswith("/static/sport-events/"):
-            disk = os.path.join(STATIC_DIR, os.path.basename(ev.cover_url))
-            try:
-                os.unlink(disk)
-            except OSError:
-                pass
+        _unlink_local_cover(ev.cover_url)
         db.delete(ev)
         n += 1
     return n
+
+
+def _unlink_local_cover(cover_url: Optional[str]) -> None:
+    """Best-effort unlink for a cover_url that points at our /static/.
+    Handles both composite (sport-events) and mirrored (sport-covers)
+    layouts; ignores remote URLs and missing files."""
+    if not cover_url:
+        return
+    if cover_url.startswith("/static/sport-events/"):
+        disk_dir = STATIC_DIR
+    elif cover_url.startswith("/static/sport-covers/"):
+        disk_dir = COVERS_DIR
+    else:
+        return
+    disk = os.path.join(disk_dir, os.path.basename(cover_url))
+    try:
+        os.unlink(disk)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -383,13 +453,20 @@ def ingest(payload: IngestPayload, triggered_by: str = "skill") -> dict[str, Any
                     continue
 
                 # Cover ladder.
-                cover = ev.cover_url if _head_ok(ev.cover_url) else None
+                slug = _event_slug(ev)
+                cover = None
+                if _head_ok(ev.cover_url):
+                    # Mirror the remote image so the frontend always
+                    # gets a stable, same-origin URL. Fall back to the
+                    # remote URL on download failure — still better
+                    # than no cover.
+                    cover = _localize_cover(ev.cover_url, slug) or ev.cover_url
                 if cover is None:
                     if (ev.home_team_logo_url and ev.away_team_logo_url
                             and _head_ok(ev.home_team_logo_url)
                             and _head_ok(ev.away_team_logo_url)):
                         cover = _compose_cover(
-                            ev.home_team_logo_url, ev.away_team_logo_url, _event_slug(ev),
+                            ev.home_team_logo_url, ev.away_team_logo_url, slug,
                         )
                         if cover:
                             summary["covers_composed"] += 1
