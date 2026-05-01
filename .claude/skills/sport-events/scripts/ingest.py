@@ -223,17 +223,15 @@ def _compose_cover(home_url: str, away_url: str, slug: str) -> Optional[str]:
     return out.get("public_url")
 
 
-_CTYPE_EXT = (
-    ("png",  "png"),
-    ("webp", "webp"),
-    ("gif",  "gif"),
-    ("jpeg", "jpg"),
-    ("jpg",  "jpg"),
-)
-
-
 def _localize_cover(url: str, slug: str) -> Optional[str]:
-    """Mirror an external cover URL to /static/sport-covers/<slug>.<ext>.
+    """Mirror an external cover URL to /static/sport-covers/<slug>.jpg.
+
+    Always re-encodes as JPEG via PIL: starlette's StaticFiles relies
+    on Python's `mimetypes` module which returns `text/plain` for some
+    formats (notably webp on older interpreters), and a wrong
+    Content-Type makes the WebView refuse to render the image. Forcing
+    jpg sidesteps that — every WebView handles jpg, and the cover is
+    a hero backdrop where a tiny re-encode loss is invisible.
 
     Returns the public path on success, None on any failure (caller
     should fall back to the remote URL — that's still better than no
@@ -248,29 +246,36 @@ def _localize_cover(url: str, slug: str) -> Optional[str]:
     except OSError:
         return None
     try:
-        with requests.get(
+        r = requests.get(
             url,
             headers=HTTP_HEADERS,
             allow_redirects=True,
             timeout=GET_TIMEOUT,
-            stream=True,
-        ) as r:
-            if not (200 <= r.status_code < 400):
-                return None
-            ctype = (r.headers.get("Content-Type") or "").lower()
-            ext = "jpg"
-            for needle, e in _CTYPE_EXT:
-                if needle in ctype:
-                    ext = e
-                    break
-            out_path = os.path.join(COVERS_DIR, f"{slug}.{ext}")
-            with open(out_path, "wb") as fh:
-                for chunk in r.iter_content(chunk_size=64 * 1024):
-                    if chunk:
-                        fh.write(chunk)
-    except (requests.RequestException, OSError):
+        )
+        if not (200 <= r.status_code < 400):
+            return None
+        data = r.content
+    except requests.RequestException:
         return None
-    return f"/static/sport-covers/{slug}.{ext}"
+
+    try:
+        import io
+        from PIL import Image
+        img = Image.open(io.BytesIO(data))
+        if img.mode not in ("RGB", "L"):
+            # Flatten transparency onto white so jpg conversion doesn't
+            # produce black halos around team logos / event posters.
+            if img.mode in ("RGBA", "LA") or "transparency" in img.info:
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
+                img = bg
+            else:
+                img = img.convert("RGB")
+        out_path = os.path.join(COVERS_DIR, f"{slug}.jpg")
+        img.save(out_path, format="JPEG", quality=88, optimize=True)
+    except (OSError, ValueError):
+        return None
+    return f"/static/sport-covers/{slug}.jpg"
 
 
 # ---------------------------------------------------------------------------
