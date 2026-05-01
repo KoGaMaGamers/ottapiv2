@@ -222,19 +222,45 @@ def run_sport_events_refresh(triggered_by: str = "schedule", dry_run: bool = Fal
 # ---------------------------------------------------------------------------
 
 def sweep_finished_events() -> int:
-    """Delete sport_events rows whose end_utc has passed; unlink the
-    matching composite-cover JPGs from disk. Returns rows deleted.
+    """Two-part sweep, run hourly by the cleanup timer:
 
-    Idempotent — safe to run as often as the operator wants. Mirrors
-    the cleanup `ingest.py` does at the tail of a successful refresh.
+      1. Delete sport_events rows whose `end_utc` has passed.
+      2. Delete rows from STALE batches (batch_id < current_batch - 1).
+         Stale batches happen when Claude calls ingest.py twice in one
+         session — only the latest batch is user-visible (the read
+         endpoint filters on current_batch), older ones are cruft.
+
+    Composite-cover JPGs for deleted rows are unlinked from disk in
+    the same step. Idempotent — safe to run as often as wanted.
     """
     from datetime import datetime as _dt
     db = SessionLocal()
     n = 0
     try:
-        from ..models import SportEvent
-        finished = db.query(SportEvent).filter(SportEvent.end_utc < _dt.utcnow()).all()
-        for ev in finished:
+        from ..models import SportEvent, KvSettings
+        # Pointer (may not exist if ingest never ran).
+        ptr_row = (
+            db.query(KvSettings)
+            .filter(KvSettings.key == "sport_events_current_batch")
+            .first()
+        )
+        try:
+            current_batch = int(ptr_row.value) if ptr_row else 0
+        except (TypeError, ValueError):
+            current_batch = 0
+
+        # Doomed = finished events OR stale-batch events. We keep
+        # `current_batch` and `current_batch - 1` for rollback safety.
+        keep_batches = {current_batch, current_batch - 1}
+        doomed = (
+            db.query(SportEvent)
+            .filter(
+                (SportEvent.end_utc < _dt.utcnow())
+                | (~SportEvent.batch_id.in_(keep_batches))
+            )
+            .all()
+        )
+        for ev in doomed:
             if ev.cover_url and ev.cover_url.startswith("/static/sport-events/"):
                 disk = os.path.join(SPORT_EVENTS_STATIC_DIR, os.path.basename(ev.cover_url))
                 try:
@@ -251,7 +277,7 @@ def sweep_finished_events() -> int:
     finally:
         db.close()
     if n:
-        logger.info("swept %d finished sport event(s)", n)
+        logger.info("swept %d finished/stale sport event(s)", n)
     return n
 
 

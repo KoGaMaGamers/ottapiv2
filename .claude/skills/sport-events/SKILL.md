@@ -191,16 +191,25 @@ provider first).
 - All times in UTC. Convert local kickoff times before submitting.
 - Drop events more than 14 days in the future or already finished.
 
-### 7. Ingest
+### 7. Ingest — exactly once
 
-Pipe the JSON to `ingest.py` via stdin, exactly once per session:
+Build the **complete** events array in memory first. When you are sure
+it is final (5–8 valid events, all dedup-checked, all covers verified),
+pipe it to `ingest.py` via stdin **exactly once**:
 
 ```
 .claude/skills/sport-events/scripts/ingest.py < /dev/stdin
 ```
 
-(In practice you'll use a heredoc or temp file — whichever your tools
-allow.)
+(Use a heredoc or write to a temp file in /tmp/ and `< file.json` —
+whichever your tools allow.)
+
+> **CRITICAL — never call ingest more than once per session.** Each
+> call advances `batch_id` and creates a fresh row set; calling it
+> twice means the previous call's events become stale-batch zombies
+> the cleanup sweep has to delete later. If you realise after the
+> first call that you missed an event, **let it go** — it'll be
+> picked up on the next scheduled refresh.
 
 ### 8. Report
 
@@ -211,7 +220,7 @@ Print the `ingest.py` JSON summary back to your operator:
  "swept_finished": 3, "unmatched": []}
 ```
 
-Do not run ingest twice. Do not edit the database directly.
+Do not edit the database directly.
 
 ## Failure mode
 
