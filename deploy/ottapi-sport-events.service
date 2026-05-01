@@ -14,7 +14,7 @@ WorkingDirectory=/home/ottapi
 ExecStart=/home/ottapi/.venv/bin/python -m src.services.sport_events_runner refresh
 # Hard cap matches the runner's internal subprocess timeout (15 min)
 # plus a small slack for Python startup / DB writes.
-TimeoutStartSec=1100s
+TimeoutStartSec=2000s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=ottapi-sport-events
