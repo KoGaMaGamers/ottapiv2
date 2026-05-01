@@ -1,0 +1,23 @@
+[Unit]
+Description=OTTAPI sport-events curation (Claude skill)
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+# Inherits root's $HOME so claude finds /root/.claude/.credentials.json
+# (Max-plan OAuth). The runner's subprocess.run(env=os.environ.copy())
+# carries it through to the claude child.
+WorkingDirectory=/home/ottapi
+ExecStart=/home/ottapi/.venv/bin/python -m src.services.sport_events_runner refresh
+# Hard cap matches the runner's internal subprocess timeout (15 min)
+# plus a small slack for Python startup / DB writes.
+TimeoutStartSec=1100s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ottapi-sport-events
+
+[Install]
+WantedBy=multi-user.target

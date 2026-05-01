@@ -1,0 +1,17 @@
+[Unit]
+Description=Sweep finished sport events hourly
+Requires=ottapi-sport-events-cleanup.service
+
+[Timer]
+# Hourly sweep — keeps the table tidy and unlinks composite cover JPGs
+# soon after their event ends. The read endpoint already filters
+# `end_utc > now() - 1h` so users never see a finished event in the
+# hero, but this prevents the table from accumulating cruft between
+# 72h refreshes.
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=ottapi-sport-events-cleanup.service
+
+[Install]
+WantedBy=timers.target

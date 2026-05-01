@@ -1,0 +1,16 @@
+[Unit]
+Description=OTTAPI sport-events finished-event sweep
+After=mysql.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/home/ottapi
+ExecStart=/home/ottapi/.venv/bin/python -m src.services.sport_events_runner cleanup
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ottapi-sport-events-cleanup
+
+[Install]
+WantedBy=multi-user.target

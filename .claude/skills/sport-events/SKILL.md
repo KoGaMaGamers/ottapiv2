@@ -11,6 +11,7 @@ allowed-tools:
   - WebSearch
   - WebFetch
   - Bash(.claude/skills/sport-events/scripts/list_channels.py)
+  - Bash(.claude/skills/sport-events/scripts/current_events.py)
   - Bash(.claude/skills/sport-events/scripts/ingest.py)
   - Bash(.claude/skills/sport-events/scripts/dry_run.py)
 ---
@@ -33,6 +34,31 @@ If you cannot produce **at least 5 valid events**, exit without
 calling `ingest.py`. The previous batch will continue to serve.
 
 ## Procedure
+
+### 0. Read what's already in the table (dedup gate)
+
+```
+.claude/skills/sport-events/scripts/current_events.py
+```
+
+Returns the list of events that are still upcoming on the active
+batch. **For every event already in this list, skip it during research
+— do not re-harvest it.** Match on:
+
+- `(home_team, away_team, start_utc-date)` for team sports
+- `(title, start_utc-date)` for non-team events (Roland Garros, F1, …)
+
+When the existing batch already covers most of the next 14 days
+(e.g. 6+ events still upcoming), aim to ADD a smaller number of new
+events that complement what's there rather than replace the list. The
+ingest script's batch swap is atomic — partial overlaps don't matter
+to data integrity, but they waste budget and churn composite cover
+JPGs needlessly.
+
+If the existing list ALREADY contains 8+ valid upcoming events (the
+target ceiling), you can exit early without calling ingest at all —
+print a one-line summary explaining you skipped because the table is
+fresh, and the previous batch keeps serving.
 
 ### 1. Dump the channel catalog
 
@@ -137,9 +163,13 @@ team-logo URLs). Everything else nullable.
 
 **Constraints**
 
-- 5 ≤ events ≤ 8.
-- Dedupe by `(home_team, away_team, start_utc)` or `(title, start_utc)`
-  for non-team events.
+- 5 ≤ total active events ≤ 8 (counting events kept from the previous
+  batch + your additions). When in doubt, prefer fewer high-quality
+  picks over more.
+- **Never include events already in `current_events.py` output** —
+  match them on `(home_team, away_team, start_utc-date)` or, for
+  non-team events, `(title, start_utc-date)`. Re-harvesting is the
+  most common failure mode for this skill.
 - `start_utc` must be ISO-8601 with explicit `Z`.
 - All times in UTC. Convert local kickoff times before submitting.
 - Drop events more than 14 days in the future or already finished.

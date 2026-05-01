@@ -6,14 +6,12 @@ from ..config import (
     ALLOCATION_SWEEP_INTERVAL_SEC,
     CATALOG_SYNC_INTERVAL_HOURS,
     GOLDENOTT_SYNC_INTERVAL_HOURS,
-    SPORT_EVENTS_REFRESH_INTERVAL_HOURS,
 )
 from ..database import SessionLocal
 from ..models import XtreamProvider
 from .catalog_sync import run_catalog_sync
 from .donor_service import sweep_expired_locks
 from .goldenott_sync import run_sync as run_goldenott_sync
-from .sport_events_runner import run_sport_events_refresh
 
 logger = logging.getLogger(__name__)
 
@@ -82,25 +80,17 @@ def start_scheduler() -> None:
         coalesce=True,
         max_instances=1,
     )
-    _scheduler.add_job(
-        run_sport_events_refresh,
-        trigger="interval",
-        hours=SPORT_EVENTS_REFRESH_INTERVAL_HOURS,
-        id="sport_events_refresh",
-        name="Sport events curation (Claude skill)",
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-        kwargs={"triggered_by": "schedule", "dry_run": False},
-    )
+    # Sport-events curation runs as a separate systemd timer (see
+    # deploy/ottapi-sport-events.timer) so it can fire as root and
+    # access /root/.claude/. It deliberately is NOT an APScheduler job
+    # in this uvicorn process — uvicorn runs as www-data and can't
+    # read the Max-plan OAuth file.
 
     _scheduler.start()
     logger.info(
         "Scheduler started: goldenott_sync every %dh, catalog_sync_all every %dh, "
-        "sport_events_refresh every %dh, "
         "allocation_sweeper every %ds",
         GOLDENOTT_SYNC_INTERVAL_HOURS, CATALOG_SYNC_INTERVAL_HOURS,
-        SPORT_EVENTS_REFRESH_INTERVAL_HOURS,
         ALLOCATION_SWEEP_INTERVAL_SEC,
     )
 

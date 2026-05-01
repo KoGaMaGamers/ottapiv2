@@ -1,0 +1,14 @@
+[Unit]
+Description=Run sport-events curation every ~72h
+Requires=ottapi-sport-events.service
+
+[Timer]
+# First fire 5 min after boot, then every 72h. Persistent so a missed
+# run after downtime fires on next start.
+OnBootSec=5min
+OnUnitActiveSec=72h
+Persistent=true
+Unit=ottapi-sport-events.service
+
+[Install]
+WantedBy=timers.target

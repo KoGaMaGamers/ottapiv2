@@ -1,0 +1,12 @@
+# Allow uvicorn (running as www-data) to trigger the sport-events
+# refresh oneshot unit on demand from the admin endpoint, without
+# granting any other privilege.
+#
+# Install with:
+#     sudo install -m 0440 /home/ottapi/deploy/sudoers.d-ottapi-sport-events \
+#         /etc/sudoers.d/ottapi-sport-events
+#     sudo visudo -c        # confirm syntax
+#
+# The www-data user can ONLY start these specific units; nothing else.
+
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start ottapi-sport-events.service, /usr/bin/systemctl start ottapi-sport-events-cleanup.service

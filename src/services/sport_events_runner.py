@@ -111,6 +111,7 @@ def run_sport_events_refresh(triggered_by: str = "schedule", dry_run: bool = Fal
         "WebSearch",
         "WebFetch",
         f"Bash({skill_dir}/list_channels.py)",
+        f"Bash({skill_dir}/current_events.py)",
         f"Bash({skill_dir}/ingest.py)",
         f"Bash({skill_dir}/dry_run.py)",
         # Heredoc / piping wrappers Claude may need to feed JSON to ingest.
@@ -212,3 +213,70 @@ def run_sport_events_refresh(triggered_by: str = "schedule", dry_run: bool = Fal
     if proc.stdout:
         logger.info("sport-events stdout tail: %s", proc.stdout[-1500:])
     _finalize_run(run_id, "success", None, events_written)
+
+
+# ---------------------------------------------------------------------------
+# Standalone cleanup — fires from its own systemd timer between refreshes
+# so finished events disappear from the hero within an hour of ending,
+# even if the next refresh is still days away.
+# ---------------------------------------------------------------------------
+
+def sweep_finished_events() -> int:
+    """Delete sport_events rows whose end_utc has passed; unlink the
+    matching composite-cover JPGs from disk. Returns rows deleted.
+
+    Idempotent — safe to run as often as the operator wants. Mirrors
+    the cleanup `ingest.py` does at the tail of a successful refresh.
+    """
+    from datetime import datetime as _dt
+    db = SessionLocal()
+    n = 0
+    try:
+        from ..models import SportEvent
+        finished = db.query(SportEvent).filter(SportEvent.end_utc < _dt.utcnow()).all()
+        for ev in finished:
+            if ev.cover_url and ev.cover_url.startswith("/static/sport-events/"):
+                disk = os.path.join(SPORT_EVENTS_STATIC_DIR, os.path.basename(ev.cover_url))
+                try:
+                    os.unlink(disk)
+                except OSError:
+                    pass
+            db.delete(ev)
+            n += 1
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("sweep_finished_events failed")
+        return 0
+    finally:
+        db.close()
+    if n:
+        logger.info("swept %d finished sport event(s)", n)
+    return n
+
+
+# ---------------------------------------------------------------------------
+# CLI entrypoint — fires from systemd timer
+# ---------------------------------------------------------------------------
+
+def _main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="sport_events_runner")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p_refresh = sub.add_parser("refresh", help="Invoke claude -p to repopulate the table")
+    p_refresh.add_argument("--dry-run", action="store_true",
+                           help="Run dry_run.py instead of ingest.py (no DB writes)")
+    p_refresh.add_argument("--triggered-by", default="systemd",
+                           help="Tag for the sport_events_runs row")
+    sub.add_parser("cleanup", help="Delete events whose end_utc has passed")
+    args = ap.parse_args()
+
+    if args.cmd == "refresh":
+        run_sport_events_refresh(triggered_by=args.triggered_by, dry_run=args.dry_run)
+    elif args.cmd == "cleanup":
+        sweep_finished_events()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
