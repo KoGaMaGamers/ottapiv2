@@ -62,8 +62,10 @@ def _start_unit(unit: str) -> None:
             ),
         )
     try:
+        # --no-block so we don't wait for the oneshot (the refresh
+        # is a 5-15 min job; the API just kicks it off).
         proc = subprocess.run(
-            [sudo, "-n", systemctl, "start", unit],
+            [sudo, "-n", systemctl, "start", "--no-block", unit],
             capture_output=True, text=True, timeout=15,
         )
     except subprocess.TimeoutExpired:

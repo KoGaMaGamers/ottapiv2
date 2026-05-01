@@ -9,4 +9,4 @@
 #
 # The www-data user can ONLY start these specific units; nothing else.
 
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start ottapi-sport-events.service, /usr/bin/systemctl start ottapi-sport-events-cleanup.service
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block ottapi-sport-events.service, /usr/bin/systemctl start --no-block ottapi-sport-events-cleanup.service
