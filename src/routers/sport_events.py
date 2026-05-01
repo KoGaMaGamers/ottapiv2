@@ -14,7 +14,7 @@ frontend's hero-fallback path depends on that.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -44,7 +44,8 @@ WINDOW_GRACE = timedelta(hours=1)   # keep visible briefly after end_utc
 # ---------------------------------------------------------------------------
 
 class ChannelOut(BaseModel):
-    live_id:           int
+    live_id:           int   # live_streams.id (DB PK) — kept for back-compat
+    stream_id:         int   # live_streams.stream_id — what /play/live/{id} expects
     channel_name:      str
     channel_logo:      Optional[str]
     broadcaster_name:  str
@@ -99,31 +100,29 @@ def _normalize(raw: Optional[str]) -> str:
     return s
 
 
-def _resolve_for_provider(
+def _sort_variants(streams: Iterable[LiveStream]) -> list[LiveStream]:
+    """Order quality variants so the 'main' channel comes first.
+    Shortest normalized name wins (proxy for the base channel over
+    +1 / regional / promo variants), then alphabetical for stability."""
+    return sorted(
+        streams,
+        key=lambda r: (len(_normalize(r.name)), r.name.lower()),
+    )
+
+
+def _resolve_all_for_provider(
     db: Session, provider_id: int, broadcaster: str,
     channel_cache: dict[int, list[LiveStream]],
-) -> Optional[LiveStream]:
-    """Return the best LiveStream for `broadcaster` under `provider_id`,
-    or None. Mirrors ingest.py's resolver but without seeding aliases —
-    the read path is hot, no writes."""
+) -> list[LiveStream]:
+    """Return EVERY LiveStream that matches `broadcaster` under
+    `provider_id`. Same layered match as ingest.py, but where the
+    write-path resolver picked one channel, the read-path collects
+    quality variants (HD / FHD / HEVC / SD …) so the modal can offer
+    a per-quality picker. No alias seeding here — read path is hot."""
     norm = _normalize(broadcaster)
     if not norm:
-        return None
+        return []
 
-    # Layer 3 first (fast index hit) — alias table.
-    alias = (
-        db.query(LiveStreamAlias)
-        .filter(LiveStreamAlias.provider_id == provider_id)
-        .filter(LiveStreamAlias.alias == norm)
-        .first()
-    )
-    if alias is not None:
-        chan = db.get(LiveStream, alias.live_stream_id)
-        if chan is not None:
-            return chan
-
-    # Layer 2 / 4 — walk the provider's channels in memory (cached
-    # per-request).
     if provider_id not in channel_cache:
         channel_cache[provider_id] = (
             db.query(LiveStream)
@@ -132,27 +131,48 @@ def _resolve_for_provider(
         )
     rows = channel_cache[provider_id]
     if not rows:
-        return None
+        return []
 
-    # Exact normalized match.
+    matches: dict[int, LiveStream] = {}
+
+    # Layer 2 — exact normalized match. Since _normalize strips
+    # HD/FHD/HEVC/SD/region tokens, every quality variant of the same
+    # base channel collapses to the same string and gets picked up.
     for r in rows:
         if _normalize(r.name) == norm:
-            return r
+            matches[r.id] = r
+    if matches:
+        return _sort_variants(matches.values())
 
-    # Token containment.
+    # Layer 3 — alias hit (fuzzy match memory from a prior ingest run).
+    # When we land on an alias, also pull its sibling variants — every
+    # channel sharing the alias target's normalized name — so quality
+    # variants come along for the ride.
+    alias = (
+        db.query(LiveStreamAlias)
+        .filter(LiveStreamAlias.provider_id == provider_id)
+        .filter(LiveStreamAlias.alias == norm)
+        .first()
+    )
+    if alias is not None:
+        target = db.get(LiveStream, alias.live_stream_id)
+        if target is not None:
+            target_norm = _normalize(target.name)
+            for r in rows:
+                if _normalize(r.name) == target_norm:
+                    matches[r.id] = r
+            if matches:
+                return _sort_variants(matches.values())
+
+    # Layer 4 — token containment fallback.
     tokens = norm.split()
     if not tokens:
-        return None
-    candidates: list[tuple[int, str, LiveStream]] = []
+        return []
     for r in rows:
-        rn = _normalize(r.name)
-        rn_tokens = set(rn.split())
+        rn_tokens = set(_normalize(r.name).split())
         if all(t in rn_tokens for t in tokens):
-            candidates.append((len(rn), rn, r))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda x: (x[0], x[1]))
-    return candidates[0][2]
+            matches[r.id] = r
+    return _sort_variants(matches.values())
 
 
 # ---------------------------------------------------------------------------
@@ -215,20 +235,22 @@ def list_sport_events(
         channels: list[ChannelOut] = []
         seen_live_ids = set()
         for b in broadcasters:
-            chan = _resolve_for_provider(
+            variants = _resolve_all_for_provider(
                 db, user.provider_id, b.broadcaster_name, channel_cache,
             )
-            if chan is None or chan.id in seen_live_ids:
-                continue
-            seen_live_ids.add(chan.id)
-            channels.append(ChannelOut(
-                live_id=chan.id,
-                channel_name=chan.name,
-                channel_logo=chan.stream_icon,
-                broadcaster_name=b.broadcaster_name,
-                broadcaster_country=b.country,
-                language=b.language,
-            ))
+            for chan in variants:
+                if chan.id in seen_live_ids:
+                    continue
+                seen_live_ids.add(chan.id)
+                channels.append(ChannelOut(
+                    live_id=chan.id,
+                    stream_id=chan.stream_id,
+                    channel_name=chan.name,
+                    channel_logo=chan.stream_icon,
+                    broadcaster_name=b.broadcaster_name,
+                    broadcaster_country=b.country,
+                    language=b.language,
+                ))
 
         if not channels:
             continue   # no playable channel for this user — drop
