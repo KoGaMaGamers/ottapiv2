@@ -21,7 +21,6 @@ from datetime import datetime
 from typing import Optional
 
 from ..config import (
-    ANTHROPIC_API_KEY,
     CLAUDE_BIN,
     CLAUDE_SUBPROCESS_TIMEOUT_SEC,
     SPORT_EVENTS_STATIC_DIR,
@@ -80,11 +79,12 @@ def run_sport_events_refresh(triggered_by: str = "schedule", dry_run: bool = Fal
     Called by APScheduler on its periodic cadence and by the admin
     trigger endpoint on demand. `dry_run=True` instructs the skill to
     run the validation script (`dry_run.py`) instead of `ingest.py`.
-    """
-    if not ANTHROPIC_API_KEY:
-        logger.warning("ANTHROPIC_API_KEY is empty — skipping sport-events refresh")
-        return
 
+    Auth: this server runs Claude on a Max plan whose OAuth token
+    lives in the invoking user's `~/.claude/`. The subprocess
+    inherits the parent's env (incl. `HOME`) so claude finds the
+    creds without us needing to pass `ANTHROPIC_API_KEY`.
+    """
     if not os.path.exists(CLAUDE_BIN):
         logger.error(
             "claude bin missing at %s — set CLAUDE_BIN env var", CLAUDE_BIN,
@@ -102,21 +102,37 @@ def run_sport_events_refresh(triggered_by: str = "schedule", dry_run: bool = Fal
         "Run the sport-events skill."
     )
 
+    # Explicit allowed-tools (mirrors SKILL.md frontmatter). Claude
+    # refuses `--dangerously-skip-permissions` when running as root,
+    # which the runner's installation context requires; the explicit
+    # whitelist is functionally equivalent and survives that check.
+    skill_dir = os.path.join(PROJECT_ROOT, ".claude", "skills", "sport-events", "scripts")
+    allowed_tools = ",".join([
+        "WebSearch",
+        "WebFetch",
+        f"Bash({skill_dir}/list_channels.py)",
+        f"Bash({skill_dir}/ingest.py)",
+        f"Bash({skill_dir}/dry_run.py)",
+        # Heredoc / piping wrappers Claude may need to feed JSON to ingest.
+        "Bash(cat)",
+        "Bash(echo *)",
+    ])
+
     cmd = [
         CLAUDE_BIN,
         "-p", prompt,
-        "--bare",
-        "--dangerously-skip-permissions",
+        "--allowed-tools", allowed_tools,
         "--output-format", "json",
-        "--max-turns", "40",
+        # Multi-step web research → 40 was too tight; allow up to 80
+        # so list_channels → 5+ WebFetches → ingest fits comfortably.
+        "--max-turns", "80",
     ]
 
-    env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
-        "HOME": os.environ.get("HOME", "/root"),
-        "SPORT_EVENTS_STATIC_DIR": SPORT_EVENTS_STATIC_DIR,
-    }
+    # Inherit the parent process env so claude can read its OAuth
+    # config from $HOME/.claude/. Do not pass --bare (it strips that
+    # config). Add the static dir + project root for the skill.
+    env = os.environ.copy()
+    env.setdefault("SPORT_EVENTS_STATIC_DIR", SPORT_EVENTS_STATIC_DIR)
 
     logger.info("sport-events refresh starting (dry_run=%s, triggered_by=%s)",
                 dry_run, triggered_by)
@@ -190,4 +206,9 @@ def run_sport_events_refresh(triggered_by: str = "schedule", dry_run: bool = Fal
         pass
 
     logger.info("sport-events refresh succeeded; events_written=%d", events_written)
+    # Surface a tail of claude's output to journal so dry-runs (which
+    # report via dry_run.py's would_accept/would_reject summary, not
+    # events_written) and unusual successes are still inspectable.
+    if proc.stdout:
+        logger.info("sport-events stdout tail: %s", proc.stdout[-1500:])
     _finalize_run(run_id, "success", None, events_written)
