@@ -71,9 +71,11 @@ def _gradient_canvas(slug: str) -> Image.Image:
 
 
 _HTTP_HEADERS = {
-    # Wikimedia / many CDNs reject default python-requests UA.
-    "User-Agent":
-        "ottapi-sport-events/1.0 (https://github.com/appelungeek/ottapi)",
+    # Browser-like UA — Wikimedia 400s the bare bot identifier.
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; OttApiSportEvents/1.0; "
+        "+https://github.com/appelungeek/ottapi)"
+    ),
     "Accept": "image/*,*/*;q=0.8",
 }
 

@@ -56,9 +56,14 @@ COMPOSE_SCRIPT = os.path.join(os.path.dirname(__file__), "compose_cover.py")
 WINDOW_MIN = timedelta(hours=6)       # past tolerance
 WINDOW_MAX = timedelta(days=14)       # future cap
 
-# Same UA the compose_cover script uses.
+# Browser-like UA — Wikimedia + several CDNs return 400 to bare
+# bot identifiers. Compliant with Wikimedia's UA policy
+# (descriptive name + contact URL inside parens).
 HTTP_HEADERS = {
-    "User-Agent": "ottapi-sport-events/1.0 (https://github.com/appelungeek/ottapi)",
+    "User-Agent": (
+        "Mozilla/5.0 (compatible; OttApiSportEvents/1.0; "
+        "+https://github.com/appelungeek/ottapi)"
+    ),
     "Accept": "*/*",
 }
 
