@@ -26,6 +26,7 @@ from ..models import (
     LiveStream,
     LiveStreamAlias,
     SportEvent,
+    SportEventBroadcaster,
 )
 from .auth import get_current_user
 from ..models import IPTVUser
@@ -42,6 +43,15 @@ WINDOW_GRACE = timedelta(hours=1)   # keep visible briefly after end_utc
 # Response shape
 # ---------------------------------------------------------------------------
 
+class ChannelOut(BaseModel):
+    live_id:           int
+    channel_name:      str
+    channel_logo:      Optional[str]
+    broadcaster_name:  str
+    broadcaster_country: Optional[str]
+    language:          Optional[str]
+
+
 class SportEventOut(BaseModel):
     id:                  int
     title:               str
@@ -52,12 +62,12 @@ class SportEventOut(BaseModel):
     away_team:           Optional[str]
     start_utc:           datetime
     end_utc:             datetime
-    broadcaster_name:    str
-    broadcaster_country: Optional[str]
     cover_url:           Optional[str]
-    live_id:             int
-    channel_name:        str
-    channel_logo:        Optional[str]
+    # All channels under the requesting user's provider that broadcast
+    # this event. The client renders a picker when len > 1; clicking
+    # a channel calls /play/live/{live_id}. Always non-empty (events
+    # with zero matches are dropped server-side).
+    channels:            List[ChannelOut]
 
 
 class SportEventsResponse(BaseModel):
@@ -177,15 +187,52 @@ def list_sport_events(
         .all()
     )
 
-    # 3. Resolve broadcaster per user's provider; drop misses.
+    # 3. For every broadcaster on every event, resolve against the
+    # requesting user's provider. Build the channels[] list. Drop
+    # events with zero resolutions.
     channel_cache: dict[int, list[LiveStream]] = {}
     out: list[SportEventOut] = []
+    seen_live_ids: set[int]
     for ev in rows:
-        chan = _resolve_for_provider(
-            db, user.provider_id, ev.broadcaster_name, channel_cache,
+        # Pull broadcasters via the relationship (eager-load to avoid
+        # N+1 — small N here, cheap to do in Python).
+        broadcasters = (
+            db.query(SportEventBroadcaster)
+            .filter(SportEventBroadcaster.event_id == ev.id)
+            .all()
         )
-        if chan is None:
-            continue
+        # Fall back to denormalized primary if no broadcaster rows
+        # exist (events ingested before the multi-broadcaster schema).
+        if not broadcasters and ev.broadcaster_name:
+            broadcasters = [
+                SportEventBroadcaster(
+                    event_id=ev.id,
+                    broadcaster_name=ev.broadcaster_name,
+                    country=ev.broadcaster_country,
+                )
+            ]
+
+        channels: list[ChannelOut] = []
+        seen_live_ids = set()
+        for b in broadcasters:
+            chan = _resolve_for_provider(
+                db, user.provider_id, b.broadcaster_name, channel_cache,
+            )
+            if chan is None or chan.id in seen_live_ids:
+                continue
+            seen_live_ids.add(chan.id)
+            channels.append(ChannelOut(
+                live_id=chan.id,
+                channel_name=chan.name,
+                channel_logo=chan.stream_icon,
+                broadcaster_name=b.broadcaster_name,
+                broadcaster_country=b.country,
+                language=b.language,
+            ))
+
+        if not channels:
+            continue   # no playable channel for this user — drop
+
         out.append(SportEventOut(
             id=ev.id,
             title=ev.title,
@@ -196,12 +243,8 @@ def list_sport_events(
             away_team=ev.away_team,
             start_utc=ev.start_utc,
             end_utc=ev.end_utc,
-            broadcaster_name=ev.broadcaster_name,
-            broadcaster_country=ev.broadcaster_country,
             cover_url=ev.cover_url,
-            live_id=chan.id,
-            channel_name=chan.name,
-            channel_logo=chan.stream_icon,
+            channels=channels,
         ))
         if len(out) >= limit:
             break

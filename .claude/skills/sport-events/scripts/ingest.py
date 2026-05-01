@@ -69,6 +69,12 @@ POINTER_KEY = "sport_events_current_batch"
 # Pydantic schema
 # ---------------------------------------------------------------------------
 
+class BroadcasterIn(BaseModel):
+    name:     str
+    country:  Optional[str] = None    # ISO 3166-1 alpha-2
+    language: Optional[str] = None    # ISO 639-1
+
+
 class EventIn(BaseModel):
     title:               str
     description:         Optional[str] = None
@@ -78,7 +84,17 @@ class EventIn(BaseModel):
     away_team:           Optional[str] = None
     start_utc:           datetime
     end_utc:             Optional[datetime] = None
-    broadcaster_name:    str
+
+    # Multi-broadcaster: same event typically airs on different TV
+    # channels per country. The skill collects ALL broadcasters it
+    # finds; the read endpoint resolves each per the requesting
+    # user's provider so the UI can offer a channel picker.
+    broadcasters:        List[BroadcasterIn] = Field(default_factory=list)
+
+    # Legacy singular fields — kept for back-compat with handcrafted
+    # fixtures and the v1 SKILL.md contract. When `broadcasters` is
+    # empty we synthesize a single-element list from these.
+    broadcaster_name:    Optional[str] = None
     broadcaster_country: Optional[str] = None
 
     cover_url:           Optional[str] = None
@@ -97,6 +113,18 @@ class EventIn(BaseModel):
         if isinstance(v, str) and v.endswith("Z"):
             v = v[:-1] + "+00:00"
         return datetime.fromisoformat(v)
+
+    def resolved_broadcasters(self) -> "list[BroadcasterIn]":
+        """Return broadcasters[], synthesizing from singular legacy
+        fields when the list is empty."""
+        if self.broadcasters:
+            return list(self.broadcasters)
+        if self.broadcaster_name:
+            return [BroadcasterIn(
+                name=self.broadcaster_name,
+                country=self.broadcaster_country,
+            )]
+        return []
 
 
 class IngestPayload(BaseModel):
@@ -371,25 +399,30 @@ def ingest(payload: IngestPayload, triggered_by: str = "skill") -> dict[str, Any
                 db.commit()
                 return summary
 
-            # Pre-resolve broadcaster→channel for every provider so we can
-            # seed aliases now (subsequent reads short-circuit).
+            # Pre-resolve broadcaster→channel for every provider × every
+            # broadcaster on every event, so alias-table fast-paths are
+            # warm before the first read.
             providers = db.query(XtreamProvider).all()
             for ev, _start, _end, _cover in valid_events:
-                for prov in providers:
-                    hit = _resolve_broadcaster_for_provider(
-                        db, prov.id, ev.broadcaster_name,
-                    )
-                    if hit is None:
-                        continue
-                    live_id, conf = hit
-                    if conf < 1.0:
-                        _seed_alias(db, prov.id, ev.broadcaster_name, live_id, conf)
+                for b in ev.resolved_broadcasters():
+                    for prov in providers:
+                        hit = _resolve_broadcaster_for_provider(
+                            db, prov.id, b.name,
+                        )
+                        if hit is None:
+                            continue
+                        live_id, conf = hit
+                        if conf < 1.0:
+                            _seed_alias(db, prov.id, b.name, live_id, conf)
 
             current_batch = _read_pointer(db)
             next_batch = current_batch + 1
 
+            from _db import SportEventBroadcaster
             for ev, start, end, cover in valid_events:
-                db.add(SportEvent(
+                broadcasters = ev.resolved_broadcasters()
+                primary = broadcasters[0]   # back-compat denormalized fields
+                row = SportEvent(
                     batch_id=next_batch,
                     title=ev.title,
                     description=ev.description,
@@ -399,11 +432,26 @@ def ingest(payload: IngestPayload, triggered_by: str = "skill") -> dict[str, Any
                     away_team=ev.away_team,
                     start_utc=start,
                     end_utc=end,
-                    broadcaster_name=ev.broadcaster_name,
-                    broadcaster_country=ev.broadcaster_country,
+                    broadcaster_name=primary.name,
+                    broadcaster_country=primary.country,
                     cover_url=cover,
                     source_url=ev.source_url,
-                ))
+                )
+                db.add(row)
+                db.flush()  # populate row.id
+                # Insert one broadcaster row per (event, broadcaster).
+                seen = set()
+                for b in broadcasters:
+                    key = (b.name.lower(), (b.country or "").upper())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    db.add(SportEventBroadcaster(
+                        event_id=row.id,
+                        broadcaster_name=b.name,
+                        country=b.country.upper() if b.country else None,
+                        language=b.language.lower() if b.language else None,
+                    ))
 
             _write_pointer(db, next_batch)
 

@@ -77,17 +77,24 @@ def main() -> int:
             else:
                 why.append("no cover and no team-logo fallback")
 
+        bs = ev.resolved_broadcasters()
         record = {
-            "title":            ev.title,
-            "broadcaster_name": ev.broadcaster_name,
-            "start_utc":        ev.start_utc.isoformat() if ev.start_utc else None,
-            "cover_path":       "cover_url" if cover_ok else (
+            "title":              ev.title,
+            "broadcaster_count":  len(bs),
+            "broadcasters":       [
+                f"{b.name}{(' (' + b.country + ')') if b.country else ''}"
+                for b in bs
+            ],
+            "start_utc":          ev.start_utc.isoformat() if ev.start_utc else None,
+            "cover_path":         "cover_url" if cover_ok else (
                 "compose"
                 if (ev.home_team_logo_url and ev.away_team_logo_url
                     and not why)
                 else "drop"
             ),
         }
+        if not bs:
+            why.append("no broadcasters provided")
         if why:
             record["reasons"] = why
             rejected.append(record)

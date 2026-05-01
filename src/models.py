@@ -523,6 +523,9 @@ class SportEvent(Base):
     start_utc = Column(DateTime, nullable=False, index=True)
     end_utc = Column(DateTime, nullable=False, index=True)
 
+    # Denormalized "primary" broadcaster — kept for quick display when
+    # we don't need the full list (admin views, run summaries, etc.).
+    # The full list of broadcasters lives in SportEventBroadcaster.
     broadcaster_name = Column(String(128), nullable=False)
     broadcaster_country = Column(String(8))
 
@@ -531,6 +534,42 @@ class SportEvent(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    broadcasters = relationship(
+        "SportEventBroadcaster",
+        back_populates="event",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class SportEventBroadcaster(Base):
+    """One row per (event, broadcaster). Big sporting events typically
+    air on different TV channels per country (Movistar+ in Spain,
+    ESPN in the US, beIN in MENA, …); the read endpoint resolves each
+    one against the requesting user's provider catalog and surfaces
+    the resolved channels so the user can pick.
+    """
+    __tablename__ = "sport_event_broadcasters"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(
+        Integer,
+        ForeignKey("sport_events.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    broadcaster_name = Column(String(128), nullable=False)
+    country = Column(String(8))            # ISO 3166-1 alpha-2
+    language = Column(String(8))           # ISO 639-1, optional
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("event_id", "broadcaster_name", "country",
+                         name="uq_event_broadcaster_country"),
+    )
+
+    event = relationship("SportEvent", back_populates="broadcasters")
 
 
 class LiveStreamAlias(Base):

@@ -25,6 +25,7 @@ from src.models import (                # noqa: E402
     LiveStream,
     LiveStreamAlias,
     SportEvent,
+    SportEventBroadcaster,
     SportEventsRun,
     XtreamProvider,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "LiveStream",
     "LiveStreamAlias",
     "SportEvent",
+    "SportEventBroadcaster",
     "SportEventsRun",
     "XtreamProvider",
     "normalize_channel_name",

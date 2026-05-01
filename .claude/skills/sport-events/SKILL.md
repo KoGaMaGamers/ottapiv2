@@ -97,8 +97,13 @@ For every shortlisted event, fetch a primary source (league site,
 Wikipedia event page, ESPN article, lequipe.fr…) and pull:
 
 - exact UTC start time
-- broadcaster name (the live TV channel for the event's region —
-  bias toward names that already appear in the step 1 catalog)
+- **EVERY broadcaster you can find** — popular events typically air on
+  different TV channels per country (Movistar+ Spain, ESPN US, beIN
+  Sports MENA, Sky Sports UK, TF1 France …). Collect the full list,
+  not just one. The user's app surfaces a channel picker so they can
+  pick the one available on their provider. Bias the list toward
+  names that already appear in the step 1 catalog, but err on the
+  side of including more rather than fewer broadcasters.
 - home / away teams (for team sports)
 - league / competition
 - a representative image URL (event poster, team kit shot, league
@@ -136,30 +141,42 @@ Assemble a JSON document with shape:
 {
   "events": [
     {
-      "title":               "Real Madrid vs Barcelona",
-      "description":         "El Clásico — La Liga matchday 14.",
-      "sport":               "football",
-      "league":              "La Liga",
-      "home_team":           "Real Madrid",
-      "away_team":           "Barcelona",
-      "start_utc":           "2026-05-12T19:00:00Z",
-      "end_utc":             "2026-05-12T21:00:00Z",
-      "broadcaster_name":    "ESPN",
-      "broadcaster_country": "US",
+      "title":         "Real Madrid vs Barcelona",
+      "description":   "El Clásico — La Liga matchday 14.",
+      "sport":         "football",
+      "league":        "La Liga",
+      "home_team":     "Real Madrid",
+      "away_team":     "Barcelona",
+      "start_utc":     "2026-05-12T19:00:00Z",
+      "end_utc":       "2026-05-12T21:00:00Z",
 
-      "cover_url":           "https://upload.wikimedia.org/...real-barca.jpg",
-      "home_team_logo_url":  null,
-      "away_team_logo_url":  null,
+      "broadcasters": [
+        { "name": "Movistar Plus+", "country": "ES", "language": "es" },
+        { "name": "ESPN",           "country": "US", "language": "en" },
+        { "name": "beIN Sports",    "country": "FR", "language": "fr" },
+        { "name": "Sky Sports",     "country": "UK", "language": "en" }
+      ],
 
-      "source_url":          "https://www.laliga.com/en-GB/match/2026-..."
+      "cover_url":          "https://upload.wikimedia.org/...real-barca.jpg",
+      "home_team_logo_url": null,
+      "away_team_logo_url": null,
+
+      "source_url":         "https://www.laliga.com/en-GB/match/2026-..."
     }
   ]
 }
 ```
 
-Required: `title`, `sport`, `start_utc`, `broadcaster_name`,
-`source_url`, and a way to render a cover (either `cover_url` or both
-team-logo URLs). Everything else nullable.
+Required: `title`, `sport`, `start_utc`, `source_url`, at least one
+entry in `broadcasters[]`, and a way to render a cover (either
+`cover_url` or both team-logo URLs). Everything else nullable.
+
+Each broadcaster needs a `name`; `country` (ISO 3166-1 alpha-2) and
+`language` (ISO 639-1) are strongly recommended so the user-facing
+picker can show flags / language tags. The first broadcaster in the
+list becomes the event's denormalized "primary" — list them in
+relevance order (the one most likely to match the typical user's
+provider first).
 
 **Constraints**
 
