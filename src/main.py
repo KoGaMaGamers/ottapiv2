@@ -23,6 +23,7 @@ from .routers import (
     recommendations,
     sport_events,
     subtitles,
+    user_streams,
 )
 from .services.scheduler import start_scheduler, stop_scheduler
 
@@ -86,6 +87,7 @@ app.include_router(play.router)
 app.include_router(recommendations.router)
 app.include_router(sport_events.router)
 app.include_router(subtitles.router)
+app.include_router(user_streams.router)
 app.include_router(legacy_compat.router)
 
 # Serve composite cover JPGs the sport-events skill generates.
