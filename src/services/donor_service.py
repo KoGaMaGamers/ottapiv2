@@ -79,6 +79,35 @@ def _needs_donor(user: IPTVUser, now: datetime) -> bool:
     return user.provider_exp_date <= now
 
 
+def pick_url_owner(
+    db: Session, requester: IPTVUser, now: Optional[datetime] = None,
+) -> Optional[IPTVUser]:
+    """Return the IPTVUser whose creds should appear in a stream URL
+    built for `requester`. Same as `requester` when their own upstream
+    works; otherwise an LRU same-provider valid donor.
+
+    This is the *non-locking* counterpart of allocate_or_reuse — used by
+    the preview endpoints, where we need a working URL but don't want
+    to claim a slot. Called per-request from a cold path; no caching.
+    """
+    now = now or datetime.utcnow()
+    if not _needs_donor(requester, now):
+        return requester
+
+    candidates = (
+        db.query(IPTVUser)
+        .filter(IPTVUser.provider_id == requester.provider_id)
+        .filter(IPTVUser.id != requester.id)
+        .filter(IPTVUser.status.in_(["Active", "Almost Expired"]))
+        .order_by(IPTVUser.allocation_last_released_at.asc())
+        .all()
+    )
+    for cand in candidates:
+        if is_eligible(cand, now):
+            return cand
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Atomic claim
 # ---------------------------------------------------------------------------

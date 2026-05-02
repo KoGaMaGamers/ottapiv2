@@ -15,6 +15,7 @@ from ..services.donor_service import (
     build_stream_url,
     heartbeat as do_heartbeat,
     is_eligible,
+    pick_url_owner,
     release as do_release,
 )
 from .auth import get_current_user
@@ -156,6 +157,16 @@ class PreviewResponse(BaseModel):
     url: str
 
 
+def _preview_url_owner(db: Session, user: IPTVUser) -> IPTVUser:
+    """Pick whose creds belong in the preview URL. Same donor swap as
+    the locking play path — without claiming a slot, since previews
+    don't need one. Raises 503 when an enforced user has no donor."""
+    owner = pick_url_owner(db, user)
+    if owner is None:
+        raise HTTPException(status_code=503, detail="no preview source available")
+    return owner
+
+
 @router.get("/preview/movie/{movie_id}", response_model=PreviewResponse)
 def preview_movie(
     movie_id: int,
@@ -166,7 +177,7 @@ def preview_movie(
     if movie is None or movie.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="movie not found")
     ext = movie.container_extension or "mp4"
-    url = build_stream_url(user, "movie", movie.xtream_id, ext)
+    url = build_stream_url(_preview_url_owner(db, user), "movie", movie.xtream_id, ext)
     return PreviewResponse(url=url)
 
 
@@ -180,7 +191,7 @@ def preview_episode(
     if ep is None or ep.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="episode not found")
     ext = ep.container_extension or "mkv"
-    url = build_stream_url(user, "series", ep.xtream_id, ext)
+    url = build_stream_url(_preview_url_owner(db, user), "series", ep.xtream_id, ext)
     return PreviewResponse(url=url)
 
 
@@ -194,5 +205,5 @@ def preview_live(
     if live is None or live.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="live stream not found")
     ext = user.preferred_output or "m3u8"
-    url = build_stream_url(user, "live", live.stream_id, ext)
+    url = build_stream_url(_preview_url_owner(db, user), "live", live.stream_id, ext)
     return PreviewResponse(url=url)
