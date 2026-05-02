@@ -49,6 +49,12 @@ TMDB_BEARER_TOKEN = _get("TMDB_BEARER_TOKEN", "")
 TMDB_API_KEY = _get("TMDB_API_KEY", "")
 
 ADMIN_SECRET = _get("ADMIN_SECRET", "")
+# Optional human-friendly admin login (Basic auth on the dashboard).
+# When set, the browser prompt accepts username=ADMIN_USERNAME +
+# password=ADMIN_PASSWORD. If unset, the operator falls back to using
+# ADMIN_SECRET as the Basic password (any username).
+ADMIN_USERNAME = _get("ADMIN_USERNAME", "")
+ADMIN_PASSWORD = _get("ADMIN_PASSWORD", "")
 
 # ── Sport-events curation (Claude Code skill) ──────────────────────────────
 # The scheduler shells out to `claude -p` which loads
