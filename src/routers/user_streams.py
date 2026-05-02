@@ -1,34 +1,48 @@
-"""User-facing stream proxy.
+"""User-facing stream proxy + preview-clip generator.
 
-Proxies provider stream URLs through the backend so the WebView can
-fetch them without hitting:
-  * mixed-content blocks (app is HTTPS, donor URLs are HTTP),
-  * CORS preflight failures,
-  * cookie / referrer leakage from the WebView origin.
+Two endpoints:
+
+  GET /api/v1/user/stream-proxy?url=…&token=…
+      Transport-level proxy for live/HLS preview URLs the WebView
+      can't fetch directly (mixed content, CORS). Streams bytes
+      through verbatim for non-HLS, rewrites M3U8 child URLs back
+      through this proxy so the chain stays inside auth.
+
+  GET /api/v1/user/preview-clip?url=…&type=movie&token=…
+      Generates a 60-second teaser clip from a donor VOD URL using
+      ffmpeg, caches it on disk for 30 min, returns a relative
+      `/api/v1/user/preview-clip/file/{clip_id}` for the WebView's
+      <video> element to fetch.
+
+  GET /api/v1/user/preview-clip/file/{clip_id}?token=…
+      Serves a previously-generated clip file.
 
 Auth: JWT either via `Authorization: Bearer …` (XHR / fetch) OR via a
 `token=` query string (HTML media elements can't set headers). The
-JWT identifies the *requester*, but the URL the proxy fetches is
-already a donor URL minted by `/api/v1/play/{kind}/{id}` or
-`/api/v1/play/preview/{kind}/{id}` — this proxy is purely a
+JWT identifies the *requester*, but the URL we fetch is already a
+donor URL minted by `/api/v1/play/{kind}/{id}` or
+`/api/v1/play/preview/{kind}/{id}` — this proxy / clipper is a
 transport-level shim, it does NOT swap creds.
-
-For HLS playlists (.m3u8), child URLs (variant playlists + media
-segments) are rewritten to also go through this proxy so the entire
-HLS chain stays inside the auth'd path. For everything else the
-upstream bytes are streamed back verbatim.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import random
 import re
-from typing import Optional
+import shutil
+import subprocess
+import time
+from pathlib import Path
+from typing import List, Literal, Optional
 from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -38,6 +52,32 @@ from ..services.auth_service import get_user_from_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/user", tags=["streams"])
+
+
+# ── Preview-clip config ─────────────────────────────────────────────────────
+
+_PREVIEW_CLIP_CACHE_DIR = Path(os.getenv(
+    "PREVIEW_CLIP_CACHE_DIR", "/tmp/ottapi_preview_clips",
+))
+_PREVIEW_CLIP_TTL_SEC = int(os.getenv("PREVIEW_CLIP_TTL_SEC", "1800"))   # 30 min
+_PREVIEW_CLIP_MAX_BYTES = int(os.getenv(
+    "PREVIEW_CLIP_MAX_BYTES", str(1_500_000_000),
+))   # ~1.5 GB total cache budget
+_PREVIEW_CLIP_DURATION_SEC = 60
+_PREVIEW_CLIP_RANDOM_START_MIN = 300
+_PREVIEW_CLIP_RANDOM_START_MAX = 600
+_PREVIEW_CLIP_ALLOW_DEBUG_START = (
+    os.getenv("PREVIEW_CLIP_ALLOW_DEBUG_START", "false").strip().lower() == "true"
+)
+_FFMPEG_TIMEOUT_SEC = 95
+
+
+class PreviewClipResponse(BaseModel):
+    clip_url: str
+    start_at_sec: int
+    duration_sec: int
+    cached: bool
+    expires_at: int
 
 
 # ── Auth: header OR query-string token ──────────────────────────────────────
@@ -200,3 +240,211 @@ def stream_proxy(
             client.close()
 
     return StreamingResponse(_iter(), status_code=status, headers=out_headers)
+
+
+# ── Preview-clip helpers ────────────────────────────────────────────────────
+
+def _ensure_preview_cache_dir() -> Path:
+    _PREVIEW_CLIP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return _PREVIEW_CLIP_CACHE_DIR
+
+
+def _safe_stream_ref(raw_url: str) -> str:
+    try:
+        parsed = urlparse(raw_url)
+        host = parsed.hostname or "unknown-host"
+        path_tail = (parsed.path or "").split("/")[-1] or "-"
+        return f"{host}/{path_tail}"
+    except Exception:
+        return "invalid-url"
+
+
+def _pick_preview_start_at(debug_start_at_sec: Optional[int]) -> int:
+    if debug_start_at_sec is not None and _PREVIEW_CLIP_ALLOW_DEBUG_START:
+        return max(0, int(debug_start_at_sec))
+    return random.randint(
+        _PREVIEW_CLIP_RANDOM_START_MIN, _PREVIEW_CLIP_RANDOM_START_MAX,
+    )
+
+
+def _preview_clip_id(user_id: int, source_url: str, start_at_sec: int, duration_sec: int) -> str:
+    payload = f"{user_id}|{source_url}|{start_at_sec}|{duration_sec}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _preview_clip_path(user_id: int, clip_id: str) -> Path:
+    return _ensure_preview_cache_dir() / f"u{user_id}_{clip_id}.mp4"
+
+
+def _clip_not_expired(path: Path) -> bool:
+    if not path.exists() or not path.is_file():
+        return False
+    age = max(0.0, time.time() - path.stat().st_mtime)
+    return age <= _PREVIEW_CLIP_TTL_SEC
+
+
+def _cleanup_preview_clip_cache() -> None:
+    """Remove expired clips, then trim oldest files until under the byte
+    budget. Best-effort — silently ignores per-file errors so a flaky
+    file never breaks an unrelated request."""
+    cache = _ensure_preview_cache_dir()
+    now = time.time()
+    files: List[Path] = [p for p in cache.glob("*.mp4") if p.is_file()]
+    for p in files:
+        try:
+            if (now - p.stat().st_mtime) > _PREVIEW_CLIP_TTL_SEC:
+                p.unlink(missing_ok=True)
+        except Exception:
+            continue
+    files = [p for p in cache.glob("*.mp4") if p.is_file()]
+    total = sum(p.stat().st_size for p in files)
+    if total <= _PREVIEW_CLIP_MAX_BYTES:
+        return
+    files.sort(key=lambda p: p.stat().st_mtime)
+    for p in files:
+        if total <= _PREVIEW_CLIP_MAX_BYTES:
+            break
+        try:
+            sz = p.stat().st_size
+            p.unlink(missing_ok=True)
+            total = max(0, total - sz)
+        except Exception:
+            continue
+
+
+def _generate_preview_clip(
+    source_url: str, output_path: Path, start_at_sec: int, duration_sec: int,
+) -> None:
+    """Run ffmpeg to extract a short H.264/AAC clip starting at
+    `start_at_sec` for `duration_sec`. Writes to `output_path`. Raises
+    HTTPException on timeout / non-zero exit / empty output."""
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise HTTPException(status_code=503, detail="ffmpeg not available on server")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists():
+        output_path.unlink(missing_ok=True)
+
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-ss", str(start_at_sec),
+        "-i", source_url,
+        "-t", str(duration_sec),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-ac", "2", "-b:a", "128k",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        str(output_path),
+    ]
+    logger.info(
+        "[preview-clip] ffmpeg start stream=%s start=%ss duration=%ss out=%s",
+        _safe_stream_ref(source_url), start_at_sec, duration_sec, output_path.name,
+    )
+    try:
+        proc = subprocess.run(
+            cmd, check=False, capture_output=True, text=True,
+            timeout=_FFMPEG_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.warning(
+            "[preview-clip] ffmpeg timeout stream=%s",
+            _safe_stream_ref(source_url),
+        )
+        raise HTTPException(status_code=504, detail="preview clip generation timed out") from exc
+    except Exception as exc:
+        logger.exception("[preview-clip] ffmpeg execution error stream=%s", _safe_stream_ref(source_url))
+        raise HTTPException(status_code=502, detail=f"preview clip generation failed: {exc}") from exc
+
+    if proc.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
+        stderr = (proc.stderr or "").strip()
+        if len(stderr) > 700:
+            stderr = stderr[:700] + "..."
+        logger.warning(
+            "[preview-clip] ffmpeg failed code=%s stream=%s stderr=%s",
+            proc.returncode, _safe_stream_ref(source_url), stderr or "unknown",
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"ffmpeg failed (code={proc.returncode}): {stderr or 'unknown error'}",
+        )
+    logger.info(
+        "[preview-clip] ffmpeg ok stream=%s out=%s size=%s",
+        _safe_stream_ref(source_url), output_path.name, output_path.stat().st_size,
+    )
+
+
+# ── Preview-clip endpoints ──────────────────────────────────────────────────
+
+@router.get("/preview-clip", response_model=PreviewClipResponse)
+def get_preview_clip(
+    request: Request,
+    url: str = Query(..., description="Absolute donor source URL to clip"),
+    type: Optional[Literal["movie", "series"]] = Query(None),
+    start_at_sec: Optional[int] = Query(None, ge=0,
+        description="Debug-only override (requires PREVIEW_CLIP_ALLOW_DEBUG_START=true)"),
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    del type   # reserved for future per-type cache tuning
+    user = _resolve_user(authorization, token, db)
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=422, detail="invalid preview source url")
+
+    selected_start = _pick_preview_start_at(start_at_sec)
+    duration = _PREVIEW_CLIP_DURATION_SEC
+    clip_id = _preview_clip_id(user.id, url, selected_start, duration)
+    clip_path = _preview_clip_path(user.id, clip_id)
+    cached = _clip_not_expired(clip_path)
+
+    logger.info(
+        "[preview-clip] request user=%s(id=%d) stream=%s start=%ss cached=%s",
+        user.username, user.id, _safe_stream_ref(url), selected_start, cached,
+    )
+
+    if not cached:
+        _generate_preview_clip(
+            source_url=url, output_path=clip_path,
+            start_at_sec=selected_start, duration_sec=duration,
+        )
+        _cleanup_preview_clip_cache()
+
+    effective_token = token or (
+        authorization[7:].strip()
+        if authorization and authorization.lower().startswith("bearer ") else ""
+    )
+    qs = f"?token={quote(effective_token, safe='')}" if effective_token else ""
+    expires_at = int(clip_path.stat().st_mtime + _PREVIEW_CLIP_TTL_SEC)
+    return PreviewClipResponse(
+        clip_url=f"/api/v1/user/preview-clip/file/{clip_id}{qs}",
+        start_at_sec=selected_start,
+        duration_sec=duration,
+        cached=cached,
+        expires_at=expires_at,
+    )
+
+
+@router.get("/preview-clip/file/{clip_id}")
+def get_preview_clip_file(
+    clip_id: str,
+    token: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    user = _resolve_user(authorization, token, db)
+    if not clip_id.isalnum():
+        raise HTTPException(status_code=400, detail="invalid clip id")
+    clip_path = _preview_clip_path(user.id, clip_id)
+    if not _clip_not_expired(clip_path):
+        if clip_path.exists():
+            clip_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=404, detail="preview clip not found or expired")
+    return FileResponse(
+        path=str(clip_path),
+        media_type="video/mp4",
+        filename=clip_path.name,
+        headers={"Cache-Control": f"private, max-age={_PREVIEW_CLIP_TTL_SEC}"},
+    )
