@@ -25,6 +25,9 @@ def main() -> int:
             .join(XtreamProvider, LiveStream.provider_id == XtreamProvider.id)
             .all()
         )
+        # Drop `###...###` rows defensively. Catalog sync already filters
+        # them out at insert time, but a freshly-onboarded provider whose
+        # first sync hasn't run yet could still leak some.
         out = [
             {
                 "provider_id":     prov.id,
@@ -34,7 +37,7 @@ def main() -> int:
                 "normalized_name": normalize_channel_name(chan.name),
             }
             for chan, prov in rows
-            if chan.name
+            if chan.name and not chan.name.lstrip().startswith("###")
         ]
         json.dump(out, sys.stdout, ensure_ascii=False)
         sys.stdout.write("\n")

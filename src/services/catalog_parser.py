@@ -44,6 +44,14 @@ def parse_live_stream_name(raw: str) -> str:
     return name or (raw or "").strip()
 
 
+def is_category_separator(name: str) -> bool:
+    """True when an Xtream "channel" is actually a `###...###` category
+    divider rather than a real stream. Keeps single-`#` channel names
+    like "#VAMOS HD" intact — only 3+ leading `#` is treated as a marker.
+    """
+    return (name or "").lstrip().startswith("###")
+
+
 # ---------------------------------------------------------------------------
 # Series stream + episode titles
 # ---------------------------------------------------------------------------

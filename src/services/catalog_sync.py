@@ -38,6 +38,7 @@ from ..models import (
     XtreamProvider,
 )
 from .catalog_parser import (
+    is_category_separator,
     parse_live_category_segments,
     parse_live_stream_name,
     parse_movie_category_name,
@@ -316,6 +317,16 @@ def _sync_live_streams(
     summary: SyncSummary,
 ) -> None:
     upstream = client.get_live_streams() or []
+
+    # Self-heal: drop any prior `###...###` category-separator rows. These
+    # aren't real streams (Xtream encodes section dividers as fake channel
+    # entries), and they pollute broadcaster matching for the sport-events
+    # skill. Skip-on-insert below prevents new ones from landing.
+    db.query(LiveStream).filter(
+        LiveStream.provider_id == provider.id,
+        LiveStream.name.like("###%"),
+    ).delete(synchronize_session=False)
+
     local = (
         db.query(LiveStream.id, LiveStream.stream_id, LiveStream.category_id, LiveStream.added)
         .filter(LiveStream.provider_id == provider.id)
@@ -328,6 +339,9 @@ def _sync_live_streams(
         sid = _to_int(item.get("stream_id"))
         if not sid:
             continue
+        parsed_name = _safe_text(parse_live_stream_name(item.get("name") or ""), 512) or ""
+        if is_category_separator(parsed_name):
+            continue
         upstream_cat = _to_int(item.get("category_id"))
         added_dt = _ts_to_dt(item.get("added"))
         live_cat_fk = cat_index.get(upstream_cat) if upstream_cat else None
@@ -338,7 +352,7 @@ def _sync_live_streams(
                 provider_id=provider.id,
                 stream_id=sid,
                 xtream_live_id=_to_int(item.get("num")),
-                name=_safe_text(parse_live_stream_name(item.get("name") or ""), 512) or "",
+                name=parsed_name,
                 raw_name=_safe_text(item.get("name"), 512),
                 stream_type=_safe_text(item.get("stream_type"), 20) or "live",
                 stream_icon=_safe_url(item.get("stream_icon")),
