@@ -81,6 +81,8 @@ def play_movie(
     alloc = _allocate_or_raise(db, user)
     ext = movie.container_extension or "mp4"
     url = build_stream_url(alloc.slot, "movie", movie.xtream_id, ext)
+    logger.info("play_movie: requester=%s(id=%d) -> donor=%s(id=%d) url=%s",
+                user.username, user.id, alloc.slot.username, alloc.slot.id, url)
     return _play_response(alloc, url)
 
 
@@ -97,6 +99,8 @@ def play_live(
     alloc = _allocate_or_raise(db, user)
     ext = (user.preferred_output or "m3u8")
     url = build_stream_url(alloc.slot, "live", live.stream_id, ext)
+    logger.info("play_live: requester=%s(id=%d) -> donor=%s(id=%d) url=%s",
+                user.username, user.id, alloc.slot.username, alloc.slot.id, url)
     return _play_response(alloc, url)
 
 
@@ -157,13 +161,16 @@ class PreviewResponse(BaseModel):
     url: str
 
 
-def _preview_url_owner(db: Session, user: IPTVUser) -> IPTVUser:
+def _preview_url_owner(db: Session, user: IPTVUser, kind: str, ref: str) -> IPTVUser:
     """Pick whose creds belong in the preview URL. Same donor swap as
     the locking play path — without claiming a slot, since previews
     don't need one. Raises 503 when an enforced user has no donor."""
     owner = pick_url_owner(db, user)
     if owner is None:
         raise HTTPException(status_code=503, detail="no preview source available")
+    if owner.id != user.id:
+        logger.info("preview_%s: requester=%s(id=%d) -> donor=%s(id=%d) ref=%s",
+                    kind, user.username, user.id, owner.username, owner.id, ref)
     return owner
 
 
@@ -177,7 +184,7 @@ def preview_movie(
     if movie is None or movie.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="movie not found")
     ext = movie.container_extension or "mp4"
-    url = build_stream_url(_preview_url_owner(db, user), "movie", movie.xtream_id, ext)
+    url = build_stream_url(_preview_url_owner(db, user, "movie", str(movie_id)), "movie", movie.xtream_id, ext)
     return PreviewResponse(url=url)
 
 
@@ -191,7 +198,7 @@ def preview_episode(
     if ep is None or ep.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="episode not found")
     ext = ep.container_extension or "mkv"
-    url = build_stream_url(_preview_url_owner(db, user), "series", ep.xtream_id, ext)
+    url = build_stream_url(_preview_url_owner(db, user, "episode", str(episode_id)), "series", ep.xtream_id, ext)
     return PreviewResponse(url=url)
 
 
@@ -205,5 +212,5 @@ def preview_live(
     if live is None or live.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="live stream not found")
     ext = user.preferred_output or "m3u8"
-    url = build_stream_url(_preview_url_owner(db, user), "live", live.stream_id, ext)
+    url = build_stream_url(_preview_url_owner(db, user, "live", str(live_id)), "live", live.stream_id, ext)
     return PreviewResponse(url=url)
