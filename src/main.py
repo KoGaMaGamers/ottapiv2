@@ -9,9 +9,11 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import SPORT_EVENTS_STATIC_DIR
 from .routers import (
+    admin_pressure,
     admin_providers,
     admin_sport_events,
     admin_sync,
+    admin_users,
     auth,
     catalog,
     legacy_compat,
@@ -73,6 +75,8 @@ app.add_middleware(
 app.include_router(admin_sync.router)
 app.include_router(admin_providers.router)
 app.include_router(admin_sport_events.router)
+app.include_router(admin_pressure.router)
+app.include_router(admin_users.router)
 app.include_router(auth.router)
 app.include_router(me.router)
 app.include_router(catalog.router)

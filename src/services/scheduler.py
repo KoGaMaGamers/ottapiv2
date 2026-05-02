@@ -12,6 +12,10 @@ from ..models import XtreamProvider
 from .catalog_sync import run_catalog_sync
 from .donor_service import sweep_expired_locks
 from .goldenott_sync import run_sync as run_goldenott_sync
+from .usage_stats_service import (
+    collect_provider_pressure_samples,
+    prune_old_pressure_samples,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,34 @@ def _run_all_provider_catalog_syncs() -> None:
             run_catalog_sync(pid)
         except Exception:
             logger.exception("scheduled catalog sync failed for provider id=%s", pid)
+
+
+def _run_pressure_sample() -> None:
+    db = SessionLocal()
+    try:
+        n = collect_provider_pressure_samples(db)
+        db.commit()
+        if n:
+            logger.debug("pressure_sample wrote %d row(s)", n)
+    except Exception:
+        db.rollback()
+        logger.exception("pressure_sample failed")
+    finally:
+        db.close()
+
+
+def _run_pressure_prune() -> None:
+    db = SessionLocal()
+    try:
+        n = prune_old_pressure_samples(db, days=30)
+        db.commit()
+        if n:
+            logger.info("pressure_prune deleted %d sample(s) older than 30d", n)
+    except Exception:
+        db.rollback()
+        logger.exception("pressure_prune failed")
+    finally:
+        db.close()
 
 
 def start_scheduler() -> None:
@@ -80,6 +112,26 @@ def start_scheduler() -> None:
         coalesce=True,
         max_instances=1,
     )
+    _scheduler.add_job(
+        _run_pressure_sample,
+        trigger="interval",
+        minutes=1,
+        id="pressure_sample",
+        name="Provider pressure sampler (1-min cadence)",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    _scheduler.add_job(
+        _run_pressure_prune,
+        trigger="cron",
+        hour=4, minute=15,
+        id="pressure_prune",
+        name="Pressure-sample 30-day retention prune",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
     # Sport-events curation runs as a separate systemd timer (see
     # deploy/ottapi-sport-events.timer) so it can fire as root and
     # access /root/.claude/. It deliberately is NOT an APScheduler job
@@ -89,7 +141,8 @@ def start_scheduler() -> None:
     _scheduler.start()
     logger.info(
         "Scheduler started: goldenott_sync every %dh, catalog_sync_all every %dh, "
-        "allocation_sweeper every %ds",
+        "allocation_sweeper every %ds, pressure_sample every 60s, "
+        "pressure_prune daily at 04:15 UTC",
         GOLDENOTT_SYNC_INTERVAL_HOURS, CATALOG_SYNC_INTERVAL_HOURS,
         ALLOCATION_SWEEP_INTERVAL_SEC,
     )

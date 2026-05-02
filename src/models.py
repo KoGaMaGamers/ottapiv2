@@ -616,3 +616,47 @@ class KvSettings(Base):
     key = Column(String(64), primary_key=True)
     value = Column(Text, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProviderPressureSample(Base):
+    """One row per (provider, minute). A scheduled job samples live
+    allocation state every 60 s and writes here so the admin dashboard
+    can chart pressure over rush-hour windows.
+
+    Renter classification (see plan §1):
+      * valid     — provider_exp_date IS NULL OR provider_exp_date > now
+      * enforced  — provider_exp_date <= now AND subscription_enforced=True
+      * expired   — provider_exp_date <= now AND subscription_enforced=False
+    """
+    __tablename__ = "provider_pressure_samples"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(Integer, ForeignKey("xtream_providers.id"),
+                         nullable=False, index=True)
+    snapshot_at = Column(DateTime, nullable=False)
+
+    total_accounts                  = Column(Integer, nullable=False, default=0)
+    eligible_accounts               = Column(Integer, nullable=False, default=0)
+    free_eligible_accounts          = Column(Integer, nullable=False, default=0)
+    expired_accounts                = Column(Integer, nullable=False, default=0)
+    subscription_enforced_accounts  = Column(Integer, nullable=False, default=0)
+    streaming_accounts              = Column(Integer, nullable=False, default=0)
+    locked_accounts                 = Column(Integer, nullable=False, default=0)
+    stale_locks                     = Column(Integer, nullable=False, default=0)
+
+    in_use_allocations              = Column(Integer, nullable=False, default=0)
+    own_allocations                 = Column(Integer, nullable=False, default=0)
+    donor_allocations               = Column(Integer, nullable=False, default=0)
+
+    enforced_renter_allocations     = Column(Integer, nullable=False, default=0)
+    valid_renter_allocations        = Column(Integer, nullable=False, default=0)
+
+    donor_pressure_pct              = Column(Float, nullable=False, default=0.0)
+    enforced_pressure_pct           = Column(Float, nullable=False, default=0.0)
+
+    __table_args__ = (
+        UniqueConstraint("provider_id", "snapshot_at",
+                         name="uq_pressure_provider_snapshot"),
+        Index("ix_pressure_snapshot_at", "snapshot_at"),
+        Index("ix_pressure_provider_snapshot", "provider_id", "snapshot_at"),
+    )
