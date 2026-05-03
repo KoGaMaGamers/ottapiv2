@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
+import requests
 from sqlalchemy import or_, update
 from sqlalchemy.orm import Session
 
@@ -32,6 +33,16 @@ from ..database import SessionLocal
 from ..models import IPTVUser
 
 logger = logging.getLogger(__name__)
+
+# How long to quarantine a donor whose creds returned 401 (or whose probe
+# said `auth=0`). Long enough that a transient upstream blip doesn't churn
+# the pool, short enough that a reactivated sub recovers within an hour.
+DONOR_UNHEALTHY_TTL_SEC = 1800           # 30 min
+# Skip the pre-flight probe if a donor's creds were verified within this
+# window — keeps cold-path latency tolerable when the same few donors
+# absorb most traffic.
+DONOR_HEALTH_FRESH_SEC = 600             # 10 min
+DONOR_PROBE_TIMEOUT_SEC = 3.5
 
 
 @dataclass
@@ -63,6 +74,109 @@ def is_eligible(user: IPTVUser, now: Optional[datetime] = None) -> bool:
     if eff is None:
         return False
     return eff > (now or datetime.utcnow())
+
+
+def _is_donor_healthy(user: IPTVUser, now: datetime) -> bool:
+    """False when this slot is currently quarantined (recent 401 / failed
+    probe). Quarantine expires automatically — no manual unblock needed."""
+    return user.donor_unhealthy_until is None or user.donor_unhealthy_until <= now
+
+
+def _mark_donor_unhealthy(db: Session, slot: IPTVUser, now: datetime, *, reason: str) -> None:
+    until = now + timedelta(seconds=DONOR_UNHEALTHY_TTL_SEC)
+    db.execute(
+        update(IPTVUser)
+        .where(IPTVUser.id == slot.id)
+        .values(donor_unhealthy_until=until)
+    )
+    db.commit()
+    logger.warning("donor unhealthy: slot=%s(id=%d) until=%s reason=%s",
+                   slot.username, slot.id, until.isoformat(), reason)
+
+
+def _probe_donor_creds(slot: IPTVUser) -> Optional[bool]:
+    """Hit the donor's player_api.php and read user_info.auth.
+
+    Returns True when creds are accepted, False when explicitly rejected
+    (HTTP 4xx or `auth=0`), None on timeout / network failure (so the
+    caller can decide whether to retry vs. trust prior state).
+    """
+    base = (slot.base_url or "").rstrip("/")
+    if not base:
+        return None
+    url = f"{base}/player_api.php"
+    try:
+        r = requests.get(
+            url,
+            params={"username": slot.username, "password": slot.password},
+            timeout=DONOR_PROBE_TIMEOUT_SEC,
+            headers={"User-Agent": "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1"},
+        )
+    except requests.exceptions.RequestException as exc:
+        logger.info("donor probe network error: slot=%s err=%s", slot.username, exc)
+        return None
+    if r.status_code in (401, 403):
+        return False
+    if r.status_code >= 500:
+        return None  # upstream hiccup — don't penalize the donor
+    if not r.ok:
+        return False
+    try:
+        body = r.json()
+    except ValueError:
+        return None
+    info = body.get("user_info") if isinstance(body, dict) else None
+    if not isinstance(info, dict):
+        return None
+    auth = info.get("auth")
+    # Xtream returns auth=1 for OK, auth=0 for failed; treat anything else
+    # as inconclusive rather than fabricating a verdict.
+    if auth in (1, "1", True):
+        return True
+    if auth in (0, "0", False):
+        return False
+    return None
+
+
+def verify_donor(db: Session, slot: IPTVUser, now: Optional[datetime] = None,
+                 *, force: bool = False) -> bool:
+    """Return True when *slot* is currently usable as a donor; False to skip.
+
+    Skips the probe if a recent verification already succeeded; otherwise
+    runs it. On a definitive failure marks the donor unhealthy so future
+    selections skip it without re-probing.
+    """
+    now = now or datetime.utcnow()
+    if not _is_donor_healthy(slot, now):
+        return False
+    if (
+        not force
+        and slot.donor_health_verified_at is not None
+        and slot.donor_health_verified_at >= now - timedelta(seconds=DONOR_HEALTH_FRESH_SEC)
+    ):
+        return True
+    verdict = _probe_donor_creds(slot)
+    if verdict is True:
+        db.execute(
+            update(IPTVUser)
+            .where(IPTVUser.id == slot.id)
+            .values(donor_health_verified_at=now)
+        )
+        db.commit()
+        return True
+    if verdict is False:
+        _mark_donor_unhealthy(db, slot, now, reason="probe auth=0/4xx")
+        return False
+    # verdict is None — inconclusive. Use cached state: if previously
+    # verified, trust it; otherwise be conservative and skip without
+    # quarantining (a network blip shouldn't burn an unproven donor).
+    return slot.donor_health_verified_at is not None
+
+
+def report_bad_donor(db: Session, slot: IPTVUser, *, reason: str = "client 401") -> None:
+    """Public wrapper used by the play router when a client reports that
+    a donor URL returned 401 mid-stream."""
+    _mark_donor_unhealthy(db, slot, datetime.utcnow(), reason=reason)
 
 
 def _needs_donor(user: IPTVUser, now: datetime) -> bool:
@@ -99,12 +213,19 @@ def pick_url_owner(
         .filter(IPTVUser.provider_id == requester.provider_id)
         .filter(IPTVUser.id != requester.id)
         .filter(IPTVUser.status.in_(["Active", "Almost Expired"]))
+        .filter(or_(
+            IPTVUser.donor_unhealthy_until.is_(None),
+            IPTVUser.donor_unhealthy_until <= now,
+        ))
         .order_by(IPTVUser.allocation_last_released_at.asc())
         .all()
     )
     for cand in candidates:
-        if is_eligible(cand, now):
-            return cand
+        if not is_eligible(cand, now):
+            continue
+        if not verify_donor(db, cand, now):
+            continue
+        return cand
     return None
 
 
@@ -187,7 +308,8 @@ def allocate_or_reuse(db: Session, owner: IPTVUser) -> Optional[Allocation]:
             db.refresh(owner)
             return Allocation(slot=owner, token=token, expires_at=owner.allocation_lock_expires_at)
 
-    # 2. Donor pool (LRU).
+    # 2. Donor pool (LRU). Filter out quarantined donors at SQL time so
+    # the loop doesn't iterate over slots we already know are dead.
     candidates = (
         db.query(IPTVUser)
         .filter(IPTVUser.provider_id == owner.provider_id)
@@ -197,11 +319,20 @@ def allocate_or_reuse(db: Session, owner: IPTVUser) -> Optional[Allocation]:
             IPTVUser.allocation_in_use == False,  # noqa: E712
             IPTVUser.allocation_lock_expires_at < now,
         ))
+        .filter(or_(
+            IPTVUser.donor_unhealthy_until.is_(None),
+            IPTVUser.donor_unhealthy_until <= now,
+        ))
         .order_by(IPTVUser.allocation_last_released_at.asc())
         .all()
     )
     for slot in candidates:
         if not is_eligible(slot, now):
+            continue
+        # Pre-flight: don't claim a slot whose creds the upstream is
+        # currently rejecting. verify_donor() short-circuits on a recent
+        # success so most allocations skip the network probe entirely.
+        if not verify_donor(db, slot, now):
             continue
         token = _try_claim(db, slot.id, owner.id, now)
         if token:

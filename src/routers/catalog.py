@@ -15,6 +15,7 @@ Endpoint summary:
   GET /api/v1/search                       ?q=&type=&page=&per_page=
 """
 
+import logging
 import threading
 import time
 from datetime import date, datetime
@@ -40,8 +41,11 @@ from ..models import (
     movie_stream_genre_association,
     series_stream_genre_association,
 )
+from ..services.donor_service import pick_url_owner
 from ..services.xtream_client import XtreamClient
 from .auth import get_current_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["catalog"])
 
@@ -562,7 +566,18 @@ def get_live_epg(
     if cached is not None:
         return {"epg_listings": cached, "cached": True}
 
-    client = XtreamClient(user.base_url, user.username, user.password)
+    # Build the upstream client from a donor when the requester's own
+    # provider creds are dead (subscription_enforced=True past
+    # provider_exp_date) — same swap rule as preview/play. EPG won't work
+    # against dead creds because the upstream returns user_info instead
+    # of epg_listings.
+    cred_owner = pick_url_owner(db, user)
+    if cred_owner is None:
+        raise HTTPException(status_code=503, detail="no donor available for EPG")
+    if cred_owner.id != user.id:
+        logger.info("epg: requester=%s(id=%d) -> donor=%s(id=%d) live=%d",
+                    user.username, user.id, cred_owner.username, cred_owner.id, live.stream_id)
+    client = XtreamClient(cred_owner.base_url, cred_owner.username, cred_owner.password)
     payload = client.get_short_epg(stream_id=live.stream_id, limit=limit)
     listings: List[Dict[str, Any]] = []
     if isinstance(payload, dict):

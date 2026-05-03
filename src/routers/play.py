@@ -17,6 +17,7 @@ from ..services.donor_service import (
     is_eligible,
     pick_url_owner,
     release as do_release,
+    report_bad_donor,
 )
 from .auth import get_current_user
 
@@ -47,6 +48,12 @@ class HeartbeatResponse(BaseModel):
 
 class ReleaseRequest(BaseModel):
     allocation_token: str
+
+
+class ReportBadDonorRequest(BaseModel):
+    allocation_token: str
+    status_code: Optional[int] = None
+    detail: Optional[str] = None
 
 
 def _allocate_or_raise(db: Session, owner: IPTVUser) -> Allocation:
@@ -144,6 +151,45 @@ def release_endpoint(
     if not do_release(db, user, body.allocation_token):
         raise HTTPException(status_code=404, detail="allocation not found")
     return {"released": True}
+
+
+@router.post("/report-bad-donor")
+def report_bad_donor_endpoint(
+    body: ReportBadDonorRequest,
+    user: IPTVUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Client tells us the donor URL it just played returned 401.
+
+    We quarantine that slot and release the allocation so the next /play
+    call lands on a different donor. Idempotent — a stale token after a
+    sweeper-driven release is treated as a no-op (200 with not_found=True
+    rather than 404, since the client wants to keep going)."""
+    slot = (
+        db.query(IPTVUser)
+        .filter(IPTVUser.allocation_locked_by_user_id == user.id)
+        .filter(IPTVUser.allocation_lock_token == body.allocation_token)
+        .filter(IPTVUser.allocation_in_use == True)  # noqa: E712
+        .first()
+    )
+    if slot is None:
+        return {"quarantined": False, "released": False, "not_found": True}
+
+    if slot.id == user.id:
+        # Client reported a 401 against the user's *own* slot. That's not
+        # a donor-pool problem to fix here — release the lock so the next
+        # /play forces the enforced-renter donor swap to re-evaluate.
+        do_release(db, user, body.allocation_token)
+        return {"quarantined": False, "released": True, "self": True}
+
+    reason = f"client {body.status_code or '401'}"
+    if body.detail:
+        reason = f"{reason}: {body.detail[:100]}"
+    report_bad_donor(db, slot, reason=reason)
+    do_release(db, user, body.allocation_token)
+    logger.info("report_bad_donor: requester=%s(id=%d) slot=%s(id=%d) reason=%s",
+                user.username, user.id, slot.username, slot.id, reason)
+    return {"quarantined": True, "released": True, "slot_id": slot.id}
 
 
 # ---------------------------------------------------------------------------

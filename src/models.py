@@ -122,6 +122,12 @@ class IPTVUser(Base):
     allocation_lock_expires_at = Column(DateTime, nullable=True)
     allocation_last_released_at = Column(DateTime, nullable=True)
 
+    # Donor health — set when a probe or client report indicates this slot's
+    # upstream creds are no longer accepted (401 from provider). Filtered out
+    # of the donor pool while in the future.
+    donor_unhealthy_until = Column(DateTime, nullable=True)
+    donor_health_verified_at = Column(DateTime, nullable=True)
+
     reseller_line_id = Column(Integer, nullable=True, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
