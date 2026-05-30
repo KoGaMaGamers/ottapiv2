@@ -136,7 +136,13 @@ _PAGE_HTML = """<!DOCTYPE html>
     .sub { color:#64748b; font-size:12px; margin-top:4px; }
     .pct { color:#fbbf24; }
     .pct.danger { color:#f87171; }
-    canvas { background: #0f172a; border-radius: 8px; padding: 8px; }
+    /* Fixed-height chart frame. Without this, Chart.js with
+       maintainAspectRatio:false fills its parent, the parent grows to
+       fit, and each refresh nudges the canvas a few px taller until
+       the page scrolls. The frame pins the canvas at a stable size. */
+    .chart-frame { position: relative; height: 320px; width: 100%;
+                   background:#0f172a; border-radius:8px; padding:8px; }
+    .chart-frame canvas { position: absolute; inset: 8px; }
     table.streams { width:100%; border-collapse:collapse; font-size:13px; }
     table.streams th, table.streams td { padding:8px 10px; text-align:left;
             border-bottom: 1px solid #1e293b; }
@@ -196,7 +202,7 @@ _PAGE_HTML = """<!DOCTYPE html>
 
     <div class="panel">
       <div class="cards" id="cards"></div>
-      <canvas id="chart" height="120"></canvas>
+      <div class="chart-frame"><canvas id="chart"></canvas></div>
     </div>
 
     <div class="panel">
