@@ -21,6 +21,7 @@ from ..database import get_db
 from ..services.usage_stats_service import (
     build_provider_pressure_snapshot,
     collect_provider_pressure_samples,
+    get_active_allocations,
     get_provider_pressure_history,
     get_provider_pressure_summary,
 )
@@ -65,6 +66,16 @@ def pressure_summary(
 ):
     """Last-hour + last-day rollup from the snapshots table."""
     return {"providers": get_provider_pressure_summary(db, provider_id=provider_id)}
+
+
+@router.get("/active")
+def pressure_active(
+    provider_id: Optional[int] = Query(None, ge=1),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Currently-locked allocations — who is watching what right now."""
+    return {"allocations": get_active_allocations(db, provider_id=provider_id)}
 
 
 @router.get("/history")
@@ -126,6 +137,27 @@ _PAGE_HTML = """<!DOCTYPE html>
     .pct { color:#fbbf24; }
     .pct.danger { color:#f87171; }
     canvas { background: #0f172a; border-radius: 8px; padding: 8px; }
+    table.streams { width:100%; border-collapse:collapse; font-size:13px; }
+    table.streams th, table.streams td { padding:8px 10px; text-align:left;
+            border-bottom: 1px solid #1e293b; }
+    table.streams th { color:#94a3b8; font-weight:600; font-size:11px;
+            text-transform:uppercase; letter-spacing:.05em; }
+    table.streams tbody tr:hover { background:#0f172a; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:99px;
+             font-size:11px; font-weight:600; }
+    .badge.donor { background:#7c2d12; color:#fdba74; }
+    .badge.own { background:#1e293b; color:#94a3b8; }
+    .badge.enforced { background:#7f1d1d; color:#fca5a5; }
+    .badge.valid { background:#14532d; color:#86efac; }
+    .badge.idle { background:#1e293b; color:#94a3b8; }
+    .badge.live { background:#1e3a8a; color:#93c5fd; }
+    .badge.movie { background:#3b0764; color:#c4b5fd; }
+    .badge.series { background:#365314; color:#bef264; }
+    .heading { display:flex; justify-content:space-between; align-items:center;
+               margin: 0 0 12px 0; }
+    .heading h2 { margin:0; font-size:15px; color:#f8fafc; }
+    .heading .count { color:#94a3b8; font-size:13px; }
+    .empty { color:#64748b; padding:20px 10px; text-align:center; font-size:13px; }
   </style>
 </head>
 <body>
@@ -152,14 +184,27 @@ _PAGE_HTML = """<!DOCTYPE html>
         <option value="15">15-min buckets</option>
       </select>
       <label style="display:flex; align-items:center; gap:6px; color:#94a3b8; font-size:13px;">
-        <input id="autoRefresh" type="checkbox" checked> auto refresh 30s
+        <input id="autoRefresh" type="checkbox" checked> auto refresh
       </label>
+      <select id="refreshEvery">
+        <option value="5000">every 5s</option>
+        <option value="10000" selected>every 10s</option>
+        <option value="30000">every 30s</option>
+      </select>
       <button class="btn" onclick="snapshotNow()">Snapshot now</button>
     </div>
 
     <div class="panel">
       <div class="cards" id="cards"></div>
       <canvas id="chart" height="120"></canvas>
+    </div>
+
+    <div class="panel">
+      <div class="heading">
+        <h2>Now streaming</h2>
+        <div class="count" id="activeCount">—</div>
+      </div>
+      <div id="activeTable"></div>
     </div>
   </div>
 
@@ -258,16 +303,74 @@ _PAGE_HTML = """<!DOCTYPE html>
       chart = new Chart(document.getElementById('chart'), cfg);
     }
 
+    function fmtAgo(iso) {
+      if (!iso) return "—";
+      const t = new Date(iso).getTime();
+      const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+      if (sec < 60) return sec + "s ago";
+      if (sec < 3600) return Math.floor(sec / 60) + "m " + (sec % 60) + "s ago";
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      return h + "h " + m + "m ago";
+    }
+
+    function renderActive(payload) {
+      const allocs = (payload && payload.allocations) || [];
+      const countEl = document.getElementById('activeCount');
+      const enforcedCount = allocs.filter(a => a.renter_kind === 'enforced').length;
+      const donorCount = allocs.filter(a => a.allocation_kind === 'donor').length;
+      countEl.textContent = `${allocs.length} active · ${donorCount} via donor · ${enforcedCount} enforced renters`;
+
+      const host = document.getElementById('activeTable');
+      if (allocs.length === 0) {
+        host.innerHTML = "<div class='empty'>No active streams right now.</div>";
+        return;
+      }
+      const rows = allocs.map(a => {
+        const titleHtml = a.stream_title
+          ? a.stream_title.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+          : '<span style="color:#64748b">—</span>';
+        const kindClass = a.stream_kind || 'idle';
+        const renterClass = a.renter_kind === 'enforced' ? 'enforced' : 'valid';
+        const slotClass = a.allocation_kind === 'donor' ? 'donor' : 'own';
+        const streamingBadge = a.is_streaming
+          ? '<span class="badge live">streaming</span>'
+          : '<span class="badge idle">idle</span>';
+        return `
+          <tr>
+            <td><span class="badge ${kindClass}">${a.stream_kind || '—'}</span></td>
+            <td>${titleHtml}<div style="color:#64748b;font-size:11px;">ref ${a.stream_ref || '—'}</div></td>
+            <td>${a.renter_username || '—'} <span class="badge ${renterClass}">${a.renter_kind}</span></td>
+            <td>${a.slot_username || '—'} <span class="badge ${slotClass}">${a.allocation_kind}</span></td>
+            <td>${streamingBadge}</td>
+            <td>${fmtAgo(a.locked_at)}</td>
+            <td>${fmtAgo(a.last_heartbeat_at)}</td>
+          </tr>
+        `;
+      }).join('');
+      host.innerHTML = `
+        <table class="streams">
+          <thead><tr>
+            <th>Kind</th><th>Title</th><th>Requester</th><th>Slot (owner of creds)</th>
+            <th>State</th><th>Locked</th><th>Last beat</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `;
+    }
+
     async function reloadAll() {
       const range = document.getElementById('range').value;
       const interval = document.getElementById('interval').value;
       try {
-        const [snap, hist] = await Promise.all([
+        const [snap, hist, active] = await Promise.all([
           fetchJson(`/api/v1/admin/providers/pressure?provider_id=${PROVIDER_ID}`),
           fetchJson(`/api/v1/admin/providers/pressure/history?provider_id=${PROVIDER_ID}&range=${range}&interval_minutes=${interval}`),
+          fetchJson(`/api/v1/admin/providers/pressure/active?provider_id=${PROVIDER_ID}`),
         ]);
         renderCards(snap);
         renderChart(hist);
+        renderActive(active);
       } catch (e) {
         console.error(e);
       }
@@ -279,12 +382,23 @@ _PAGE_HTML = """<!DOCTYPE html>
       reloadAll();
     }
 
+    // Refresh cadence is user-selectable so it can be turned up during a
+    // live event without rebuilding. setInterval is rebound when the
+    // dropdown changes.
+    let refreshTimer = null;
+    function applyRefreshCadence() {
+      const ms = parseInt(document.getElementById('refreshEvery').value, 10) || 10000;
+      if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = setInterval(() => {
+        if (document.getElementById('autoRefresh').checked) reloadAll();
+      }, ms);
+    }
+
     document.getElementById('range').addEventListener('change', reloadAll);
     document.getElementById('interval').addEventListener('change', reloadAll);
+    document.getElementById('refreshEvery').addEventListener('change', applyRefreshCadence);
     reloadAll();
-    setInterval(() => {
-      if (document.getElementById('autoRefresh').checked) reloadAll();
-    }, 30000);
+    applyRefreshCadence();
   </script>
 </body>
 </html>

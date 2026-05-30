@@ -30,7 +30,14 @@ from typing import Any, Dict, List, Literal, Optional
 
 from sqlalchemy.orm import Session, aliased
 
-from ..models import IPTVUser, ProviderPressureSample, XtreamProvider
+from ..models import (
+    IPTVUser,
+    LiveStream,
+    MovieStream,
+    ProviderPressureSample,
+    SeriesEpisode,
+    XtreamProvider,
+)
 from .donor_service import is_eligible
 
 
@@ -183,6 +190,121 @@ def build_provider_pressure_snapshot(
             "enforced_pressure_pct":          enforced_pressure_pct,
         })
     return snapshot
+
+
+# ---------------------------------------------------------------------------
+# Live "who's watching what" — for the dashboard's active-streams panel
+# ---------------------------------------------------------------------------
+
+def _resolve_stream_titles(
+    db: Session,
+    provider_id: int,
+    refs: List[tuple[str, str]],
+) -> Dict[tuple[str, str], str]:
+    """Resolve a batch of (kind, ref) → title. kind is 'live'|'movie'|'series',
+    ref is the xtream stream_id/xtream_id as a string. One query per kind."""
+    out: Dict[tuple[str, str], str] = {}
+    by_kind: Dict[str, List[int]] = defaultdict(list)
+    for kind, ref in refs:
+        if not ref:
+            continue
+        try:
+            by_kind[kind].append(int(ref))
+        except (TypeError, ValueError):
+            continue
+
+    if by_kind.get("live"):
+        rows = (
+            db.query(LiveStream.stream_id, LiveStream.name)
+            .filter(LiveStream.provider_id == provider_id,
+                    LiveStream.stream_id.in_(by_kind["live"]))
+            .all()
+        )
+        for sid, name in rows:
+            out[("live", str(sid))] = name or ""
+    if by_kind.get("movie"):
+        rows = (
+            db.query(MovieStream.xtream_id, MovieStream.name)
+            .filter(MovieStream.provider_id == provider_id,
+                    MovieStream.xtream_id.in_(by_kind["movie"]))
+            .all()
+        )
+        for sid, name in rows:
+            out[("movie", str(sid))] = name or ""
+    if by_kind.get("series"):
+        rows = (
+            db.query(SeriesEpisode.xtream_id, SeriesEpisode.title)
+            .filter(SeriesEpisode.provider_id == provider_id,
+                    SeriesEpisode.xtream_id.in_(by_kind["series"]))
+            .all()
+        )
+        for sid, title in rows:
+            out[("series", str(sid))] = title or ""
+    return out
+
+
+def get_active_allocations(
+    db: Session,
+    *,
+    provider_id: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """Return one row per currently-held allocation with renter, slot,
+    stream metadata and lock timestamps. Used by the dashboard's live
+    table so the operator can see *who is watching what* during a rush."""
+    ts = now or datetime.utcnow()
+
+    Renter = aliased(IPTVUser)
+    q = (
+        db.query(IPTVUser, Renter)
+        .outerjoin(Renter, IPTVUser.allocation_locked_by_user_id == Renter.id)
+        .filter(
+            IPTVUser.allocation_in_use == True,  # noqa: E712
+            IPTVUser.allocation_lock_expires_at > ts,
+        )
+    )
+    if provider_id is not None:
+        q = q.filter(IPTVUser.provider_id == provider_id)
+    rows = q.order_by(IPTVUser.allocation_locked_at.asc()).all()
+
+    # Batch-resolve titles per provider to avoid one query per row.
+    refs_by_provider: Dict[int, List[tuple[str, str]]] = defaultdict(list)
+    for slot, _renter in rows:
+        if slot.current_stream_kind and slot.current_stream_ref:
+            refs_by_provider[int(slot.provider_id)].append(
+                (slot.current_stream_kind, str(slot.current_stream_ref))
+            )
+    title_lookup: Dict[int, Dict[tuple[str, str], str]] = {}
+    for pid, refs in refs_by_provider.items():
+        title_lookup[pid] = _resolve_stream_titles(db, pid, refs)
+
+    out: List[Dict[str, Any]] = []
+    for slot, renter in rows:
+        is_donor = bool(renter) and slot.id != renter.id
+        kind = slot.current_stream_kind or None
+        ref = slot.current_stream_ref or None
+        title = None
+        if kind and ref:
+            title = title_lookup.get(int(slot.provider_id), {}).get((kind, str(ref)))
+        renter_kind = _renter_kind(renter, ts) if renter is not None else "valid"
+        out.append({
+            "provider_id":               int(slot.provider_id) if slot.provider_id else None,
+            "slot_id":                   slot.id,
+            "slot_username":             slot.username,
+            "renter_id":                 renter.id if renter else None,
+            "renter_username":           renter.username if renter else None,
+            "renter_kind":               renter_kind,
+            "allocation_kind":           "donor" if is_donor else "own",
+            "stream_kind":               kind,
+            "stream_ref":                ref,
+            "stream_title":              title,
+            "is_streaming":              bool(slot.is_streaming),
+            "locked_at":                 slot.allocation_locked_at.isoformat() if slot.allocation_locked_at else None,
+            "lock_expires_at":           slot.allocation_lock_expires_at.isoformat() if slot.allocation_lock_expires_at else None,
+            "last_heartbeat_at":         slot.last_heartbeat_at.isoformat() if slot.last_heartbeat_at else None,
+            "current_stream_started_at": slot.current_stream_started_at.isoformat() if slot.current_stream_started_at else None,
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------
