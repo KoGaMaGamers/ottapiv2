@@ -10,6 +10,12 @@ Group=root
 # Inherits root's $HOME so claude finds /root/.claude/.credentials.json
 # (Max-plan OAuth). The runner's subprocess.run(env=os.environ.copy())
 # carries it through to the claude child.
+# symuxd's socket lives at the XDG default /run/user/0/symuxd.sock; root
+# linger (loginctl enable-linger root) keeps /run/user/0 alive across
+# unattended timer fires, and symux auto-spawns the daemon there if absent.
+# Do NOT pin SYMUX_SOCKET to a non-default path — symux keeps a
+# socket-agnostic "current session" pointer, so a different socket spawns a
+# fresh daemon that lacks it and every call fails "session N not in list".
 WorkingDirectory=/home/ottapi
 ExecStart=/home/ottapi/.venv/bin/python -m src.services.sport_events_runner refresh
 # Hard cap matches the runner's internal subprocess timeout (15 min)

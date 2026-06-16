@@ -57,12 +57,21 @@ ADMIN_USERNAME = _get("ADMIN_USERNAME", "")
 ADMIN_PASSWORD = _get("ADMIN_PASSWORD", "")
 
 # ── Sport-events curation (Claude Code skill) ──────────────────────────────
-# The scheduler shells out to `claude -p` which loads
-# .claude/skills/sport-events/SKILL.md and writes a fresh batch of
-# upcoming live sport events into the DB. See migration/10 in tv_app_v2
-# for design notes.
+# The scheduler shells out to `symux -p` (a `claude` drop-in wrapper that
+# runs under symuxd, which manages tool permissions itself — so the
+# per-call --allowed-tools list claude needs is accepted-but-ignored).
+# It loads .claude/skills/sport-events/SKILL.md and writes a fresh batch
+# of upcoming live sport events into the DB. See migration/10 in
+# tv_app_v2 for design notes.
 SPORT_EVENTS_REFRESH_INTERVAL_HOURS = _get_int("SPORT_EVENTS_REFRESH_INTERVAL_HOURS", 72)
-CLAUDE_BIN = _get("CLAUDE_BIN", "/root/.local/bin/claude")
+# Env key kept as CLAUDE_BIN for back-compat; default now points at symux.
+CLAUDE_BIN = _get("CLAUDE_BIN", "/usr/local/bin/symux")
+# Pin the model symux launches Claude with. symux/symuxd would otherwise
+# fall back to $SYMUX_CLAUDE_MODEL then claude's own default — and an earlier
+# config left that at `claude-fable-5`, which is no longer available on this
+# host (hard-blocked in ~/.claude.json), so the curation runs silently did
+# nothing. Pin an available model explicitly. Override via env if needed.
+SPORT_EVENTS_MODEL = _get("SPORT_EVENTS_MODEL", "claude-opus-4-8")
 CLAUDE_SUBPROCESS_TIMEOUT_SEC = _get_int("CLAUDE_SUBPROCESS_TIMEOUT_SEC", 1800)
 ANTHROPIC_API_KEY = _get("ANTHROPIC_API_KEY", "")
 SPORT_EVENTS_STATIC_DIR = _get("SPORT_EVENTS_STATIC_DIR", "/home/ottapi/static/sport-events")

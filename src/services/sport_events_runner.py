@@ -1,11 +1,10 @@
 """Driver for the sport-events curation pipeline.
 
-Shells out to `claude -p` running the project's `sport-events` Skill,
-which assembles a batch of upcoming live sport events and pipes the
-result into the ingest helper. We capture stdout/stderr, record a
-SportEventsRun row for visibility, and let APScheduler (or the admin
-trigger) call us at any time — `max_instances=1` on the job def
-prevents collisions.
+Shells out to `symux -p` (a `claude` drop-in; see config.CLAUDE_BIN)
+running the project's `sport-events` Skill, which assembles a batch of
+upcoming live sport events and pipes the result into the ingest helper.
+We capture stdout/stderr, record a SportEventsRun row for visibility,
+and let the systemd timer (or the admin trigger) call us at any time.
 
 All cost is intentionally uncapped; quality of the curation is the
 priority. The hard guards are the subprocess timeout and the
@@ -23,6 +22,7 @@ from typing import Optional
 from ..config import (
     CLAUDE_BIN,
     CLAUDE_SUBPROCESS_TIMEOUT_SEC,
+    SPORT_EVENTS_MODEL,
     SPORT_EVENTS_STATIC_DIR,
 )
 from ..database import SessionLocal
@@ -87,7 +87,7 @@ def run_sport_events_refresh(triggered_by: str = "schedule", dry_run: bool = Fal
     """
     if not os.path.exists(CLAUDE_BIN):
         logger.error(
-            "claude bin missing at %s — set CLAUDE_BIN env var", CLAUDE_BIN,
+            "symux/claude bin missing at %s — set CLAUDE_BIN env var", CLAUDE_BIN,
         )
         return
 
@@ -122,6 +122,9 @@ def run_sport_events_refresh(triggered_by: str = "schedule", dry_run: bool = Fal
     cmd = [
         CLAUDE_BIN,
         "-p", prompt,
+        # Pin an available model — never let symux fall back to a blocked
+        # default (e.g. the now-unavailable claude-fable-5). See config.
+        "--model", SPORT_EVENTS_MODEL,
         "--allowed-tools", allowed_tools,
         "--output-format", "json",
         # Multi-step web research → 40 was too tight; allow up to 80
