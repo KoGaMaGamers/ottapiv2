@@ -60,6 +60,8 @@ export interface WatchlistItemInput {
   year?: string | number | null;
   genres?: ReadonlyArray<string | { name?: string | null }>;
   container_extension?: string | null;
+  /** When true, the item belongs to an adult category — never added. */
+  is_adult?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +176,8 @@ export function isInWatchlist(item: WatchlistItemInput | null): boolean {
 }
 
 export function addWatchlistItem(item: WatchlistItemInput): boolean {
+  // Adult content is excluded from every regular-content feature.
+  if (item.is_adult) return false;
   const key = getWatchlistKey(item);
   if (!key) return false;
   const cur = state();
@@ -197,6 +201,7 @@ export function removeWatchlistItem(
 
 /** Returns the new state — true if added, false if removed. */
 export function toggleWatchlistItem(item: WatchlistItemInput): boolean {
+  if (item.is_adult) return false; // adult content is never added
   if (isInWatchlist(item)) {
     removeWatchlistItem(item);
     return false;

@@ -41,6 +41,12 @@ from ..models import (
     movie_stream_genre_association,
     series_stream_genre_association,
 )
+from ..services.adult import (
+    adult_live_category_ids,
+    adult_movie_category_ids,
+    adult_serie_category_ids,
+    apply_adult_filter,
+)
 from ..services.donor_service import pick_url_owner
 from ..services.xtream_client import XtreamClient
 from .auth import get_current_user
@@ -127,6 +133,7 @@ class LiveCategoryNode(BaseModel):
     id: int
     name: str
     category_id: Optional[int]
+    is_adult: bool = False
     children: List["LiveCategoryNode"] = []
 
 
@@ -138,6 +145,7 @@ class FlatCategory(BaseModel):
     category_id: int
     name: str
     language: Optional[str]
+    is_adult: bool = False
 
 
 class LiveStreamItem(BaseModel):
@@ -151,6 +159,7 @@ class LiveStreamItem(BaseModel):
     live_category_id: Optional[int]
     tv_archive: bool
     added: Optional[datetime]
+    is_adult: bool = False
 
 
 class MovieListItem(BaseModel):
@@ -169,6 +178,7 @@ class MovieListItem(BaseModel):
     duration_secs: Optional[int]
     added: Optional[datetime]
     genres: List[str] = []
+    is_adult: bool = False
 
 
 class MovieDetail(MovieListItem):
@@ -219,6 +229,7 @@ class SeriesListItem(BaseModel):
     last_modified: Optional[datetime]
     release_date: Optional[date]
     genres: List[str] = []
+    is_adult: bool = False
 
 
 class SeriesDetail(SeriesListItem):
@@ -262,7 +273,7 @@ class EpisodeOut(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _movie_to_list_item(m: MovieStream) -> MovieListItem:
+def _movie_to_list_item(m: MovieStream, adult_ids: Optional[set[int]] = None) -> MovieListItem:
     return MovieListItem(
         id=m.id, name=m.name, year=m.year, language=m.language,
         rating_5based=m.rating_5based, cover_big=m.cover_big,
@@ -271,10 +282,11 @@ def _movie_to_list_item(m: MovieStream) -> MovieListItem:
         tmdb_vote_average=m.tmdb_vote_average, tmdb_popularity=m.tmdb_popularity,
         duration_secs=m.duration_secs, added=m.added,
         genres=[g.name for g in (m.genres or [])],
+        is_adult=bool(adult_ids and m.movie_category_id in adult_ids),
     )
 
 
-def _series_to_list_item(s: SeriesStream) -> SeriesListItem:
+def _series_to_list_item(s: SeriesStream, adult_ids: Optional[set[int]] = None) -> SeriesListItem:
     return SeriesListItem(
         id=s.id, name=s.name, language=s.language, rating_5based=s.rating_5based,
         cover=s.cover, backdrop_path=s.backdrop_path,
@@ -282,15 +294,17 @@ def _series_to_list_item(s: SeriesStream) -> SeriesListItem:
         tmdb_vote_average=s.tmdb_vote_average, tmdb_popularity=s.tmdb_popularity,
         last_modified=s.last_modified, release_date=s.release_date,
         genres=[g.name for g in (s.genres or [])],
+        is_adult=bool(adult_ids and s.series_category_id in adult_ids),
     )
 
 
-def _live_to_item(l: LiveStream) -> LiveStreamItem:
+def _live_to_item(l: LiveStream, adult_ids: Optional[set[int]] = None) -> LiveStreamItem:
     return LiveStreamItem(
         id=l.id, stream_id=l.stream_id, name=l.name, raw_name=l.raw_name,
         stream_icon=l.stream_icon, epg_channel_id=l.epg_channel_id,
         category_id=l.category_id, live_category_id=l.live_category_id,
         tv_archive=bool(l.tv_archive), added=l.added,
+        is_adult=bool(adult_ids and l.live_category_id in adult_ids),
     )
 
 
@@ -340,10 +354,23 @@ def _genre_counts_for(
         junction = movie_stream_genre_association
         stream_table = MovieStream
         stream_fk_col = junction.c.movie_stream_id
+        cat_fk = MovieStream.movie_category_id
+        adult_ids = adult_movie_category_ids(db, provider_id)
     else:
         junction = series_stream_genre_association
         stream_table = SeriesStream
         stream_fk_col = junction.c.series_stream_id
+        cat_fk = SeriesStream.series_category_id
+        adult_ids = adult_serie_category_ids(db, provider_id)
+
+    # Exclude adult-category streams from the join so their titles don't
+    # inflate the genre counts shown on the regular Movies/Series pages.
+    join_cond = and_(
+        stream_table.id == stream_fk_col,
+        stream_table.provider_id == provider_id,
+    )
+    if adult_ids:
+        join_cond = and_(join_cond, cat_fk.notin_(adult_ids))
 
     rows = (
         db.query(
@@ -353,13 +380,7 @@ def _genre_counts_for(
             func.count(stream_table.id).label("count"),
         )
         .outerjoin(junction, junction.c.genre_id == TMDBGenre.id)
-        .outerjoin(
-            stream_table,
-            and_(
-                stream_table.id == stream_fk_col,
-                stream_table.provider_id == provider_id,
-            ),
-        )
+        .outerjoin(stream_table, join_cond)
         .group_by(TMDBGenre.id)
         .having(func.count(stream_table.id) > 0)
         .order_by(TMDBGenre.name)
@@ -400,7 +421,8 @@ def _build_live_tree(rows: List[LiveCategory]) -> List[LiveCategoryNode]:
     by_id: dict[int, LiveCategoryNode] = {}
     for r in rows:
         by_id[r.id] = LiveCategoryNode(
-            id=r.id, name=r.category_name, category_id=r.category_id, children=[],
+            id=r.id, name=r.category_name, category_id=r.category_id,
+            is_adult=bool(r.is_adult), children=[],
         )
     roots: List[LiveCategoryNode] = []
     for r in rows:
@@ -414,48 +436,50 @@ def _build_live_tree(rows: List[LiveCategory]) -> List[LiveCategoryNode]:
 
 @router.get("/categories/live", response_model=List[LiveCategoryNode])
 def list_live_categories(
+    adult_only: bool = Query(
+        False, description="Return ONLY adult categories (for the Adult page). Default excludes them."
+    ),
     user: IPTVUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    rows = (
-        db.query(LiveCategory)
-        .filter(LiveCategory.provider_id == user.provider_id)
-        .order_by(LiveCategory.parent_id.asc(), LiveCategory.category_name.asc())
-        .all()
-    )
+    q = db.query(LiveCategory).filter(LiveCategory.provider_id == user.provider_id)
+    q = q.filter(LiveCategory.is_adult.is_(True) if adult_only else LiveCategory.is_adult.is_(False))
+    rows = q.order_by(LiveCategory.parent_id.asc(), LiveCategory.category_name.asc()).all()
     return _build_live_tree(rows)
 
 
 @router.get("/categories/movies", response_model=List[FlatCategory])
 def list_movie_categories(
+    adult_only: bool = Query(
+        False, description="Return ONLY adult categories (for the Adult page). Default excludes them."
+    ),
     user: IPTVUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    rows = (
-        db.query(MovieCategory)
-        .filter(MovieCategory.provider_id == user.provider_id)
-        .order_by(MovieCategory.category_name.asc())
-        .all()
-    )
+    q = db.query(MovieCategory).filter(MovieCategory.provider_id == user.provider_id)
+    q = q.filter(MovieCategory.is_adult.is_(True) if adult_only else MovieCategory.is_adult.is_(False))
+    rows = q.order_by(MovieCategory.category_name.asc()).all()
     return [
-        FlatCategory(id=r.id, category_id=r.category_id, name=r.category_name, language=r.language)
+        FlatCategory(id=r.id, category_id=r.category_id, name=r.category_name,
+                     language=r.language, is_adult=bool(r.is_adult))
         for r in rows
     ]
 
 
 @router.get("/categories/series", response_model=List[FlatCategory])
 def list_serie_categories(
+    adult_only: bool = Query(
+        False, description="Return ONLY adult categories (for the Adult page). Default excludes them."
+    ),
     user: IPTVUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    rows = (
-        db.query(SerieCategory)
-        .filter(SerieCategory.provider_id == user.provider_id)
-        .order_by(SerieCategory.category_name.asc())
-        .all()
-    )
+    q = db.query(SerieCategory).filter(SerieCategory.provider_id == user.provider_id)
+    q = q.filter(SerieCategory.is_adult.is_(True) if adult_only else SerieCategory.is_adult.is_(False))
+    rows = q.order_by(SerieCategory.category_name.asc()).all()
     return [
-        FlatCategory(id=r.id, category_id=r.category_id, name=r.category_name, language=r.language)
+        FlatCategory(id=r.id, category_id=r.category_id, name=r.category_name,
+                     language=r.language, is_adult=bool(r.is_adult))
         for r in rows
     ]
 
@@ -470,6 +494,9 @@ def list_live_streams(
         None,
         description="LiveCategory.id (FK). Accepts single int or comma-separated list (e.g. 1,2,3).",
     ),
+    adult_only: bool = Query(
+        False, description="Return ONLY adult channels (for the Adult page). Default excludes them."
+    ),
     page: int = Query(1, ge=1),
     per_page: int = Query(DEFAULT_PER_PAGE, ge=1, le=MAX_PER_PAGE),
     user: IPTVUser = Depends(get_current_user),
@@ -482,9 +509,11 @@ def list_live_streams(
             q = q.filter(LiveStream.live_category_id == cat_ids[0])
         else:
             q = q.filter(LiveStream.live_category_id.in_(cat_ids))
+    adult_ids = adult_live_category_ids(db, user.provider_id)
+    q = apply_adult_filter(q, LiveStream.live_category_id, adult_ids, adult_only)
     q = q.order_by(LiveStream.xtream_live_id.asc(), LiveStream.id.asc())
     items, total = _paginate(q, page, per_page)
-    return _page([_live_to_item(x) for x in items], total, page, per_page)
+    return _page([_live_to_item(x, adult_ids) for x in items], total, page, per_page)
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +629,9 @@ def list_movies(
     language: Optional[str] = Query(None, max_length=10),
     genre_id: Optional[int] = Query(None, description="TMDBGenre.id"),
     sort: Literal["added_desc", "added_asc", "year_desc", "year_asc", "rating_desc", "name_asc", "popularity_desc"] = "added_desc",
+    adult_only: bool = Query(
+        False, description="Return ONLY adult movies (for the Adult page). Default excludes them."
+    ),
     page: int = Query(1, ge=1),
     per_page: int = Query(DEFAULT_PER_PAGE, ge=1, le=MAX_PER_PAGE),
     user: IPTVUser = Depends(get_current_user),
@@ -624,9 +656,11 @@ def list_movies(
                    movie_stream_genre_association.c.movie_stream_id == MovieStream.id)
              .filter(movie_stream_genre_association.c.genre_id == genre_id)
         )
+    adult_ids = adult_movie_category_ids(db, user.provider_id)
+    q = apply_adult_filter(q, MovieStream.movie_category_id, adult_ids, adult_only)
     q = q.order_by(_MOVIE_SORT[sort])
     items, total = _paginate(q, page, per_page)
-    return _page([_movie_to_list_item(x) for x in items], total, page, per_page)
+    return _page([_movie_to_list_item(x, adult_ids) for x in items], total, page, per_page)
 
 
 @router.get("/series")
@@ -638,6 +672,9 @@ def list_series(
     language: Optional[str] = Query(None, max_length=10),
     genre_id: Optional[int] = Query(None, description="TMDBGenre.id"),
     sort: Literal["last_modified_desc", "name_asc", "popularity_desc", "rating_desc"] = "last_modified_desc",
+    adult_only: bool = Query(
+        False, description="Return ONLY adult series (for the Adult page). Default excludes them."
+    ),
     page: int = Query(1, ge=1),
     per_page: int = Query(DEFAULT_PER_PAGE, ge=1, le=MAX_PER_PAGE),
     user: IPTVUser = Depends(get_current_user),
@@ -662,9 +699,11 @@ def list_series(
                    series_stream_genre_association.c.series_stream_id == SeriesStream.id)
              .filter(series_stream_genre_association.c.genre_id == genre_id)
         )
+    adult_ids = adult_serie_category_ids(db, user.provider_id)
+    q = apply_adult_filter(q, SeriesStream.series_category_id, adult_ids, adult_only)
     q = q.order_by(_SERIES_SORT[sort])
     items, total = _paginate(q, page, per_page)
-    return _page([_series_to_list_item(x) for x in items], total, page, per_page)
+    return _page([_series_to_list_item(x, adult_ids) for x in items], total, page, per_page)
 
 
 # ---------------------------------------------------------------------------
@@ -686,7 +725,7 @@ def get_movie(
     )
     if m is None:
         raise HTTPException(status_code=404, detail="movie not found")
-    base = _movie_to_list_item(m)
+    base = _movie_to_list_item(m, adult_movie_category_ids(db, user.provider_id))
     return MovieDetail(
         **base.model_dump(),
         o_name=m.o_name, description=m.description, actors=m.actors,
@@ -716,7 +755,7 @@ def get_series(
     )
     if s is None:
         raise HTTPException(status_code=404, detail="series not found")
-    base = _series_to_list_item(s)
+    base = _series_to_list_item(s, adult_serie_category_ids(db, user.provider_id))
     seasons = sorted(s.seasons, key=lambda x: x.season_number)
     return SeriesDetail(
         **base.model_dump(),
@@ -786,8 +825,10 @@ def search(
     user: IPTVUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Search is a regular-content surface: adult titles are always excluded.
     pattern = f"%{q.strip()}%"
     if type == "movies":
+        adult_ids = adult_movie_category_ids(db, user.provider_id)
         query = (
             db.query(MovieStream)
             .options(selectinload(MovieStream.genres))
@@ -799,9 +840,11 @@ def search(
             ))
             .order_by(_MOVIE_SORT["popularity_desc"])
         )
+        query = apply_adult_filter(query, MovieStream.movie_category_id, adult_ids, False)
         items, total = _paginate(query, page, per_page)
-        return _page([_movie_to_list_item(x) for x in items], total, page, per_page)
+        return _page([_movie_to_list_item(x, adult_ids) for x in items], total, page, per_page)
     if type == "series":
+        adult_ids = adult_serie_category_ids(db, user.provider_id)
         query = (
             db.query(SeriesStream)
             .options(selectinload(SeriesStream.genres))
@@ -813,9 +856,11 @@ def search(
             ))
             .order_by(_SERIES_SORT["popularity_desc"])
         )
+        query = apply_adult_filter(query, SeriesStream.series_category_id, adult_ids, False)
         items, total = _paginate(query, page, per_page)
-        return _page([_series_to_list_item(x) for x in items], total, page, per_page)
+        return _page([_series_to_list_item(x, adult_ids) for x in items], total, page, per_page)
     # live
+    adult_ids = adult_live_category_ids(db, user.provider_id)
     query = (
         db.query(LiveStream)
         .filter(LiveStream.provider_id == user.provider_id)
@@ -825,5 +870,6 @@ def search(
         ))
         .order_by(LiveStream.name.asc())
     )
+    query = apply_adult_filter(query, LiveStream.live_category_id, adult_ids, False)
     items, total = _paginate(query, page, per_page)
-    return _page([_live_to_item(x) for x in items], total, page, per_page)
+    return _page([_live_to_item(x, adult_ids) for x in items], total, page, per_page)

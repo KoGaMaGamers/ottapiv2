@@ -33,6 +33,9 @@ export interface UiPrefs {
   lastTab: string;
   focusRestore: boolean;
   theme: Theme;
+  /** Reveal the PIN-gated "Adult" top-menu item. Only takes effect when a
+   *  parental PIN is also set (see TopNav). Default false. */
+  showAdultContent: boolean;
 }
 
 /**
@@ -71,6 +74,7 @@ const DEFAULT_PREFS: ClientPrefs = {
     lastTab: "home",
     focusRestore: true,
     theme: "dark",
+    showAdultContent: false,
   },
   content: {
     live: null,
@@ -226,4 +230,13 @@ export function setAdultContentPreferences(adult: CategoryFilter): ClientPrefs {
 
 export function getPlaybackPreferences(): PlaybackPrefs {
   return getClientPreferences().playback;
+}
+
+/** Whether the user opted to reveal the Adult menu (still gated on a PIN). */
+export function getShowAdultContent(): boolean {
+  return getClientPreferences().ui.showAdultContent === true;
+}
+
+export function setShowAdultContent(value: boolean): ClientPrefs {
+  return setClientPreferences({ ui: { showAdultContent: value } });
 }

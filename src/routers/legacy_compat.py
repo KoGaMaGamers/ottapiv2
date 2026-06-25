@@ -76,6 +76,12 @@ from .catalog import (
     _series_to_list_item,
 )
 from .me import CredentialsResponse, MeResponse, me as new_me, me_credentials as new_me_credentials
+from ..services.adult import (
+    adult_live_category_ids,
+    adult_movie_category_ids,
+    adult_serie_category_ids,
+    apply_adult_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +387,7 @@ def legacy_live_categories(
     rows = (
         db.query(LiveCategory)
         .filter(LiveCategory.provider_id == user.provider_id)
+        .filter(LiveCategory.is_adult.is_(False))
         .order_by(LiveCategory.parent_id.asc(), LiveCategory.category_name.asc())
         .all()
     )
@@ -415,6 +422,7 @@ def legacy_vod_categories(
     rows = (
         db.query(MovieCategory)
         .filter(MovieCategory.provider_id == user.provider_id)
+        .filter(MovieCategory.is_adult.is_(False))
         .order_by(MovieCategory.category_name.asc())
         .all()
     )
@@ -437,6 +445,7 @@ def legacy_series_categories(
     rows = (
         db.query(SerieCategory)
         .filter(SerieCategory.provider_id == user.provider_id)
+        .filter(SerieCategory.is_adult.is_(False))
         .order_by(SerieCategory.category_name.asc())
         .all()
     )
@@ -505,6 +514,10 @@ def legacy_live(
         q = q.filter(or_(LiveStream.name.ilike(pattern), LiveStream.raw_name.ilike(pattern)))
     if tv_archive:
         q = q.filter(LiveStream.tv_archive.is_(True))
+    q = apply_adult_filter(
+        q, LiveStream.live_category_id,
+        adult_live_category_ids(db, user.provider_id), False,
+    )
     q = q.order_by(LiveStream.xtream_live_id.asc(), LiveStream.id.asc())
     rows = q.offset(offset).limit(limit).all()
     return [_live_legacy_shape(l) for l in rows]
@@ -566,6 +579,10 @@ def legacy_vod(
              .join(TMDBGenre, TMDBGenre.id == movie_stream_genre_association.c.genre_id)
              .filter(TMDBGenre.name.ilike(genre))
         )
+    q = apply_adult_filter(
+        q, MovieStream.movie_category_id,
+        adult_movie_category_ids(db, user.provider_id), False,
+    )
     q = q.order_by(*_movie_sort_clause(sort))
     rows = q.offset(offset).limit(limit).all()
     return [_movie_legacy_shape(m) for m in rows]
@@ -621,6 +638,10 @@ def legacy_series(
              .join(TMDBGenre, TMDBGenre.id == series_stream_genre_association.c.genre_id)
              .filter(TMDBGenre.name.ilike(genre))
         )
+    q = apply_adult_filter(
+        q, SeriesStream.series_category_id,
+        adult_serie_category_ids(db, user.provider_id), False,
+    )
     q = q.order_by(*_series_sort_clause(sort))
     rows = q.offset(offset).limit(limit).all()
     return [_series_legacy_shape(s) for s in rows]
@@ -720,7 +741,7 @@ def legacy_stream_access(
         if alloc is None:
             raise HTTPException(status_code=503, detail="no slot available; try again shortly")
         ext = (user.preferred_output or "m3u8")
-        url = build_stream_url(alloc.slot, "live", live.stream_id, ext)
+        url = build_stream_url(alloc.slot, "live", live.stream_id, ext, db=db)
         return {
             "url": url,
             "stream_kind": "live",
@@ -763,7 +784,7 @@ def legacy_stream_access(
         if alloc is None:
             raise HTTPException(status_code=503, detail="no slot available; try again shortly")
         ext = body.container_extension or movie.container_extension or "mp4"
-        url = build_stream_url(alloc.slot, "movie", movie.xtream_id, ext)
+        url = build_stream_url(alloc.slot, "movie", movie.xtream_id, ext, db=db)
         return {
             "url": url,
             "stream_kind": "movie",
@@ -786,7 +807,7 @@ def legacy_stream_access(
     if alloc is None:
         raise HTTPException(status_code=503, detail="no slot available; try again shortly")
     ext = body.container_extension or ep.container_extension or "mkv"
-    url = build_stream_url(alloc.slot, "series", ep.xtream_id, ext)
+    url = build_stream_url(alloc.slot, "series", ep.xtream_id, ext, db=db)
     return {
         "url": url,
         "stream_kind": "series",
@@ -1097,6 +1118,10 @@ def legacy_similar(
             .group_by(MovieStream.id)
             .order_by(MovieStream.tmdb_popularity.is_(None), MovieStream.tmdb_popularity.desc())
         )
+        q = apply_adult_filter(
+            q, MovieStream.movie_category_id,
+            adult_movie_category_ids(db, user.provider_id), False,
+        )
         total = q.count()
         rows = q.offset((page - 1) * limit).limit(limit).all()
         items = [_movie_legacy_shape(m) for m in rows]
@@ -1113,6 +1138,10 @@ def legacy_similar(
             .filter(TMDBGenre.name.in_(seed_genres))
             .group_by(SeriesStream.id)
             .order_by(SeriesStream.tmdb_popularity.is_(None), SeriesStream.tmdb_popularity.desc())
+        )
+        q = apply_adult_filter(
+            q, SeriesStream.series_category_id,
+            adult_serie_category_ids(db, user.provider_id), False,
         )
         total = q.count()
         rows = q.offset((page - 1) * limit).limit(limit).all()
@@ -1183,7 +1212,7 @@ def legacy_preview_clip(
         if movie is None:
             raise HTTPException(status_code=404, detail="movie not found")
         ext = movie.container_extension or "mp4"
-        clip_url = build_stream_url(user, "movie", movie.xtream_id, ext)
+        clip_url = build_stream_url(user, "movie", movie.xtream_id, ext, db=db)
     elif t == "series":
         ep = (
             db.query(SeriesEpisode)
@@ -1194,7 +1223,7 @@ def legacy_preview_clip(
         if ep is None:
             raise HTTPException(status_code=404, detail="episode not found")
         ext = ep.container_extension or "mkv"
-        clip_url = build_stream_url(user, "series", ep.xtream_id, ext)
+        clip_url = build_stream_url(user, "series", ep.xtream_id, ext, db=db)
     else:
         # live: forward the URL unchanged (no clip semantics for live)
         clip_url = url
@@ -1234,6 +1263,10 @@ def legacy_titles(
             .filter(MovieStream.provider_id == user.provider_id)
             .filter(MovieStream.tmdb_id.isnot(None))
         )
+        q = apply_adult_filter(
+            q, MovieStream.movie_category_id,
+            adult_movie_category_ids(db, user.provider_id), False,
+        )
         if order_by == "averageRating":
             col = MovieStream.rating_5based
         elif order_by == "numVotes":
@@ -1258,6 +1291,10 @@ def legacy_titles(
             db.query(SeriesStream)
             .filter(SeriesStream.provider_id == user.provider_id)
             .filter(SeriesStream.tmdb_id.isnot(None))
+        )
+        q = apply_adult_filter(
+            q, SeriesStream.series_category_id,
+            adult_serie_category_ids(db, user.provider_id), False,
         )
         if order_by == "averageRating":
             col = SeriesStream.rating_5based

@@ -12,6 +12,7 @@ from ..models import XtreamProvider
 from .catalog_sync import run_catalog_sync
 from .donor_service import sweep_expired_locks
 from .goldenott_sync import run_sync as run_goldenott_sync
+from .dns_health_service import check_all_dns_health, seed_from_users
 from .usage_stats_service import (
     collect_provider_pressure_samples,
     prune_old_pressure_samples,
@@ -53,11 +54,33 @@ def _run_pressure_sample() -> None:
     try:
         n = collect_provider_pressure_samples(db)
         db.commit()
+        # Logged at INFO so the journal shows minute-by-minute heartbeat
+        # during live events — the sampler is the dashboard's source of
+        # truth, and silence there has been mistaken for "the page is
+        # broken" before.
         if n:
-            logger.debug("pressure_sample wrote %d row(s)", n)
+            logger.info("pressure_sample wrote %d row(s)", n)
     except Exception:
         db.rollback()
         logger.exception("pressure_sample failed")
+    finally:
+        db.close()
+
+
+def _run_dns_health_check() -> None:
+    results = check_all_dns_health()
+    if results.get("changed"):
+        logger.info("dns_health_check: %s", results)
+
+
+def _run_dns_seed() -> None:
+    """One-shot on startup: make sure every parent domain in iptv_users
+    is tracked in provider_dns_entries."""
+    db = SessionLocal()
+    try:
+        seed_from_users(db)
+    except Exception:
+        logger.exception("dns_seed failed")
     finally:
         db.close()
 
@@ -132,6 +155,24 @@ def start_scheduler() -> None:
         coalesce=True,
         max_instances=1,
     )
+    _scheduler.add_job(
+        _run_dns_health_check,
+        trigger="interval",
+        minutes=5,
+        id="dns_health_check",
+        name="Provider DNS health probe (5-min cadence)",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+    )
+    # Seed DNS entries from user base_urls on first tick (10s after boot)
+    _scheduler.add_job(
+        _run_dns_seed,
+        trigger="date",
+        run_date=None,  # run immediately
+        id="dns_seed",
+        name="Seed provider_dns_entries from iptv_users (one-shot)",
+    )
     # Sport-events curation runs as a separate systemd timer (see
     # deploy/ottapi-sport-events.timer) so it can fire as root and
     # access /root/.claude/. It deliberately is NOT an APScheduler job
@@ -142,7 +183,7 @@ def start_scheduler() -> None:
     logger.info(
         "Scheduler started: goldenott_sync every %dh, catalog_sync_all every %dh, "
         "allocation_sweeper every %ds, pressure_sample every 60s, "
-        "pressure_prune daily at 04:15 UTC",
+        "dns_health_check every 5m, pressure_prune daily at 04:15 UTC",
         GOLDENOTT_SYNC_INTERVAL_HOURS, CATALOG_SYNC_INTERVAL_HOURS,
         ALLOCATION_SWEEP_INTERVAL_SEC,
     )

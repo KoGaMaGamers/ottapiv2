@@ -11,8 +11,15 @@ import { useLocation, useNavigate } from "@solidjs/router";
 import { appShellZone, setAppShellZone } from "../stores/shell";
 import { useNavigationScope } from "../lib/navigation";
 import { isDirectionalKey, isSelectKey } from "../lib/navigationKeys";
+import { getShowAdultContent } from "../lib/clientPreferences";
 import { SearchIcon, UserIcon } from "./icons";
 import logoUrl from "/128x128@2x.png?url";
+
+const PIN_KEY = "ott_parental_pin";
+
+/** Fired by Profile when the "Show Adult content" toggle or the PIN changes,
+ *  so the (non-reactive localStorage-backed) Adult tab updates without reload. */
+export const ADULT_VISIBILITY_EVENT = "adult-visibility-changed";
 
 interface NavTab {
   label: string;
@@ -23,18 +30,25 @@ interface NavTab {
   icon?: () => JSX.Element;
 }
 
-const TABS: NavTab[] = [
+// Static tabs, split so the conditional "Adult" tab can be inserted at the end
+// of the text group (just before the right-aligned icon group).
+const TEXT_TABS: NavTab[] = [
   { label: "Home", path: "/home" },
   { label: "Live", path: "/live" },
   { label: "Movies", path: "/movies" },
   { label: "Series", path: "/series" },
+];
+const ICON_TABS: NavTab[] = [
   { label: "Search", path: "/search", icon: () => <SearchIcon /> },
   { label: "Profile", path: "/profile", icon: () => <UserIcon /> },
 ];
+const ADULT_TAB: NavTab = { label: "Adult", path: "/adult" };
 
-/** First index of the icon group — everything from this index onwards
- *  is rendered after the flex spacer (right-aligned). */
-const ICON_GROUP_START = TABS.findIndex((t) => !!t.icon);
+/** The Adult tab shows only when the user opted in AND a parental PIN exists
+ *  (no PIN ⇒ hidden regardless of the toggle). */
+function adultMenuVisible(): boolean {
+  return getShowAdultContent() && !!localStorage.getItem(PIN_KEY);
+}
 
 /**
  * Top navigation strip. D-pad-active when `appShellZone() === "nav"`.
@@ -69,11 +83,42 @@ export default function TopNav() {
   // Mirror the shell signal into the scope's active flag.
   createEffect(() => setActive(appShellZone() === "nav"));
 
-  // Whenever the URL changes, point `focused` at the matching tab.
+  // localStorage / clientPreferences aren't reactive — re-read the Adult-tab
+  // visibility on mount, on cross-tab `storage` events, and on the custom
+  // event Profile dispatches when the toggle or PIN changes.
+  const [showAdult, setShowAdult] = createSignal(adultMenuVisible());
+  const refreshAdult = () => setShowAdult(adultMenuVisible());
+  onMount(() => {
+    window.addEventListener("storage", refreshAdult);
+    window.addEventListener(ADULT_VISIBILITY_EVENT, refreshAdult);
+  });
+  onCleanup(() => {
+    window.removeEventListener("storage", refreshAdult);
+    window.removeEventListener(ADULT_VISIBILITY_EVENT, refreshAdult);
+  });
+
+  // The live tab list: text tabs, optional Adult tab, then the icon group.
+  const tabs = createMemo<NavTab[]>(() => [
+    ...TEXT_TABS,
+    ...(showAdult() ? [ADULT_TAB] : []),
+    ...ICON_TABS,
+  ]);
+  const iconGroupStart = createMemo(() => tabs().findIndex((t) => !!t.icon));
+
+  // Whenever the URL changes (or the tab set changes), point `focused` at the
+  // matching tab. Also re-evaluate Adult visibility on navigation (e.g. after
+  // leaving Profile).
   createEffect(() => {
     const path = location.pathname;
-    const idx = TABS.findIndex((t) => path.startsWith(t.path));
+    refreshAdult();
+    const idx = tabs().findIndex((t) => path.startsWith(t.path));
     if (idx >= 0) setFocused(idx);
+  });
+
+  // Keep focus in range if the tab set shrinks (Adult tab removed).
+  createEffect(() => {
+    const n = tabs().length;
+    if (focused() > n - 1) setFocused(n - 1);
   });
 
   function onKey(e: KeyboardEvent) {
@@ -85,14 +130,14 @@ export default function TopNav() {
         setFocused((i) => Math.max(i - 1, 0));
         break;
       case "ArrowRight":
-        setFocused((i) => Math.min(i + 1, TABS.length - 1));
+        setFocused((i) => Math.min(i + 1, tabs().length - 1));
         break;
       case "ArrowDown":
         setAppShellZone("content");
         break;
       case "Enter":
       case " ":
-        navigate(TABS[focused()].path);
+        navigate(tabs()[focused()].path);
         setAppShellZone("content");
         break;
     }
@@ -103,7 +148,7 @@ export default function TopNav() {
 
   // Active path tab — for the always-on highlight (independent of focus)
   const activeIdx = createMemo(() =>
-    TABS.findIndex((t) => location.pathname.startsWith(t.path)),
+    tabs().findIndex((t) => location.pathname.startsWith(t.path)),
   );
 
   return (
@@ -126,7 +171,7 @@ export default function TopNav() {
           Symbioplayer
         </span>
       </div>
-      <For each={TABS}>
+      <For each={tabs()}>
         {(tab, i) => {
           const isFocused = () =>
             appShellZone() === "nav" && focused() === i();
@@ -134,7 +179,7 @@ export default function TopNav() {
           const isIcon = !!tab.icon;
           // First icon-group item gets pushed to the right via
           // ml-auto; subsequent icon-group items follow naturally.
-          const isFirstIcon = i() === ICON_GROUP_START;
+          const isFirstIcon = () => i() === iconGroupStart();
           return (
             <button
               onClick={() => {
@@ -145,7 +190,7 @@ export default function TopNav() {
               title={tab.label}
               aria-label={tab.label}
               class={`${isIcon ? "p-2 text-base" : "px-3 py-1.5 text-sm"} rounded-md font-medium outline-none transition-colors ${
-                isFirstIcon ? "ml-auto" : ""
+                isFirstIcon() ? "ml-auto" : ""
               } ${
                 isActive() ? "text-white" : "text-zinc-400 hover:text-zinc-200"
               } ${

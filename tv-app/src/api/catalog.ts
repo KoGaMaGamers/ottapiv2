@@ -42,16 +42,19 @@ export function listSeriesGenres(): Promise<GenreCountOut[]> {
 // Categories
 // ---------------------------------------------------------------------------
 
-export function listLiveCategories(): Promise<LiveCategoryNode[]> {
-  return api.get<LiveCategoryNode[]>("/api/v1/categories/live");
+// `adultOnly` returns ONLY adult categories (for the dedicated Adult page).
+// The default (omitted/false) excludes them — adult content never appears on
+// the regular Live/Movies/Series surfaces.
+export function listLiveCategories(adultOnly = false): Promise<LiveCategoryNode[]> {
+  return api.get<LiveCategoryNode[]>(`/api/v1/categories/live${adultOnly ? "?adult_only=true" : ""}`);
 }
 
-export function listMovieCategories(): Promise<FlatCategory[]> {
-  return api.get<FlatCategory[]>("/api/v1/categories/movies");
+export function listMovieCategories(adultOnly = false): Promise<FlatCategory[]> {
+  return api.get<FlatCategory[]>(`/api/v1/categories/movies${adultOnly ? "?adult_only=true" : ""}`);
 }
 
-export function listSerieCategories(): Promise<FlatCategory[]> {
-  return api.get<FlatCategory[]>("/api/v1/categories/series");
+export function listSerieCategories(adultOnly = false): Promise<FlatCategory[]> {
+  return api.get<FlatCategory[]>(`/api/v1/categories/series${adultOnly ? "?adult_only=true" : ""}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -69,7 +72,9 @@ function buildQuery(params: object): string {
 }
 
 export interface LiveListOpts {
-  category_id?: number;
+  category_id?: number | string;
+  /** Return ONLY adult channels (Adult page). Default excludes them. */
+  adult_only?: boolean;
   page?: number;
   per_page?: number;
 }
@@ -84,6 +89,8 @@ export interface MovieListOpts {
   language?: string;
   genre_id?: number;
   sort?: MovieSort;
+  /** Return ONLY adult movies (Adult page). Default excludes them. */
+  adult_only?: boolean;
   page?: number;
   per_page?: number;
 }

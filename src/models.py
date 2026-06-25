@@ -155,6 +155,10 @@ class LiveCategory(Base):
     parent_id = Column(Integer, ForeignKey("live_categories.id"), nullable=True)
     category_name = Column(String(255), nullable=False)
     category_id = Column(Integer, nullable=True)
+    # Adult-only flag, set at sync time by name detection. Adult categories are
+    # excluded from all regular-content surfaces and surfaced only on the
+    # dedicated PIN-gated Adult page.
+    is_adult = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -172,6 +176,8 @@ class MovieCategory(Base):
     language = Column(String(10), nullable=True)
     category_name = Column(String(255), nullable=False)
     category_id = Column(Integer, nullable=False)
+    # See LiveCategory.is_adult.
+    is_adult = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -191,6 +197,8 @@ class SerieCategory(Base):
     language = Column(String(10), nullable=True)
     category_name = Column(String(255), nullable=False)
     category_id = Column(Integer, nullable=False)
+    # See LiveCategory.is_adult.
+    is_adult = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -622,6 +630,32 @@ class KvSettings(Base):
     key = Column(String(64), primary_key=True)
     value = Column(Text, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProviderDnsEntry(Base):
+    """Known DNS parent domains for a provider. A scheduler job probes each
+    entry periodically and flips is_healthy so that donor URL building and
+    sync logic can avoid dead infrastructure without per-request probes."""
+    __tablename__ = "provider_dns_entries"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(Integer, ForeignKey("xtream_providers.id"),
+                         nullable=False)
+    domain      = Column(String(255), nullable=False)
+
+    is_healthy      = Column(Boolean, default=True, nullable=False)
+    last_checked_at = Column(DateTime, nullable=True)
+    last_healthy_at = Column(DateTime, nullable=True)
+    resolved_ips    = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("provider_id", "domain",
+                         name="uq_provider_dns_domain"),
+        Index("ix_provider_dns_provider", "provider_id"),
+    )
 
 
 class ProviderPressureSample(Base):

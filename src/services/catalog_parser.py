@@ -106,6 +106,20 @@ def parse_live_category_segments(raw: str) -> List[str]:
     return [seg.strip() for seg in _LIVE_CATEGORY_SPLIT_RE.split(text) if seg.strip()]
 
 
+# Adult-category detection. Single source of truth for "is this category
+# adult?", used by the catalog sync to set <Category>.is_adult. Matches the
+# provider's adult labels ("Adult 4K", "Adult FHD", "For Adults") plus the
+# common "XXX" / "18+" conventions, word-boundary anchored so it doesn't
+# misfire on substrings. Keep in sync with the backfill REGEXP in
+# migrations/2026-06-25-add-is-adult-to-categories.sql.
+_ADULT_CATEGORY_RE = re.compile(r"\bADULT\b|\bXXX\b|\b18\+|FOR\s+ADULTS?", re.IGNORECASE)
+
+
+def is_adult_category_name(name: str) -> bool:
+    """True when a (parsed) category name denotes adult-only content."""
+    return bool(name and _ADULT_CATEGORY_RE.search(name))
+
+
 # ---------------------------------------------------------------------------
 # VOD movie stream name (language + title + year)
 # ---------------------------------------------------------------------------

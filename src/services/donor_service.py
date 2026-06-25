@@ -447,10 +447,21 @@ def sweep_expired_locks() -> int:
 # Stream URL builder
 # ---------------------------------------------------------------------------
 
-def build_stream_url(slot: IPTVUser, kind: str, xtream_id: int, ext: str) -> str:
+def build_stream_url(
+    slot: IPTVUser, kind: str, xtream_id: int, ext: str,
+    db: Optional[Session] = None,
+) -> str:
     """Construct a playback URL using the chosen slot's creds.
 
     kind: "live" | "movie" | "series"
+
+    When *db* is provided the base URL is rewritten through
+    ``dns_health_service.rewrite_to_healthy`` so a slot whose stored
+    ``base_url`` points at dead infrastructure transparently swaps to a
+    live domain from the same provider.
     """
     base = (slot.base_url or "").rstrip("/")
+    if db is not None and slot.provider_id is not None:
+        from .dns_health_service import rewrite_to_healthy
+        base = rewrite_to_healthy(db, slot.provider_id, base)
     return f"{base}/{kind}/{slot.username}/{slot.password}/{xtream_id}.{ext}"

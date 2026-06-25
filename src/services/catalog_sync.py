@@ -29,6 +29,7 @@ from ..models import (
     IPTVUser,
     LiveCategory,
     LiveStream,
+    LiveStreamAlias,
     MovieCategory,
     MovieStream,
     SerieCategory,
@@ -38,6 +39,7 @@ from ..models import (
     XtreamProvider,
 )
 from .catalog_parser import (
+    is_adult_category_name,
     is_category_separator,
     parse_live_category_segments,
     parse_live_stream_name,
@@ -169,15 +171,23 @@ def _sync_live_categories(
     }
     leaf_lookup: dict[int, int] = {}
 
-    def _ensure_segment(segment: str, parent_local_id: Optional[int]) -> int:
+    def _ensure_segment(segment: str, parent_local_id: Optional[int], adult: bool) -> int:
         key = (parent_local_id, segment.strip().lower())
         existing = by_path.get(key)
         if existing is not None:
+            # Upgrade an existing node to adult if this path is adult (e.g.
+            # backfilling the flag on a pre-existing tree). Never downgrade —
+            # a node's adultness is determined by its fixed ancestor path.
+            if adult:
+                node = db.get(LiveCategory, existing)
+                if node is not None and not node.is_adult:
+                    node.is_adult = True
             return existing
         node = LiveCategory(
             provider_id=provider.id,
             parent_id=parent_local_id,
             category_name=segment.strip(),
+            is_adult=adult,
         )
         db.add(node)
         db.flush()
@@ -192,8 +202,12 @@ def _sync_live_categories(
             continue
         parent_local_id: Optional[int] = None
         leaf_local_id: Optional[int] = None
+        # Adult-ness inherits down the path: once any ancestor segment is
+        # adult, the whole subtree (incl. the channel-bearing leaf) is adult.
+        path_adult = False
         for seg in segments:
-            parent_local_id = _ensure_segment(seg, parent_local_id)
+            path_adult = path_adult or is_adult_category_name(seg)
+            parent_local_id = _ensure_segment(seg, parent_local_id, path_adult)
             leaf_local_id = parent_local_id
 
         if leaf_local_id is not None:
@@ -227,6 +241,7 @@ def _sync_movie_categories(
         if upstream_cat_id is None:
             continue
         language, name = parse_movie_category_name(cat.get("category_name") or "")
+        adult = is_adult_category_name(name)
         existing = by_id.get(upstream_cat_id)
         if existing is None:
             row = MovieCategory(
@@ -234,6 +249,7 @@ def _sync_movie_categories(
                 category_id=upstream_cat_id,
                 language=language,
                 category_name=name,
+                is_adult=adult,
             )
             db.add(row)
             db.flush()
@@ -247,6 +263,9 @@ def _sync_movie_categories(
                 changed = True
             if existing.category_name != name:
                 existing.category_name = name
+                changed = True
+            if existing.is_adult != adult:
+                existing.is_adult = adult
                 changed = True
             if changed:
                 summary.movie_categories_updated += 1
@@ -273,6 +292,7 @@ def _sync_serie_categories(
         if upstream_cat_id is None:
             continue
         language, name = parse_serie_category_name(cat.get("category_name") or "")
+        adult = is_adult_category_name(name)
         existing = by_id.get(upstream_cat_id)
         if existing is None:
             row = SerieCategory(
@@ -280,6 +300,7 @@ def _sync_serie_categories(
                 category_id=upstream_cat_id,
                 language=language,
                 category_name=name,
+                is_adult=adult,
             )
             db.add(row)
             db.flush()
@@ -293,6 +314,9 @@ def _sync_serie_categories(
                 changed = True
             if existing.category_name != name:
                 existing.category_name = name
+                changed = True
+            if existing.is_adult != adult:
+                existing.is_adult = adult
                 changed = True
             if changed:
                 summary.serie_categories_updated += 1
@@ -322,6 +346,23 @@ def _sync_live_streams(
     # aren't real streams (Xtream encodes section dividers as fake channel
     # entries), and they pollute broadcaster matching for the sport-events
     # skill. Skip-on-insert below prevents new ones from landing.
+    #
+    # First clear any live_stream_aliases that point at those separators — a
+    # fuzzy sport-events broadcaster match can seed an alias onto one, and its
+    # FK (NO ACTION) would otherwise block the delete and abort the whole sync.
+    sep_ids = [
+        r[0]
+        for r in db.query(LiveStream.id)
+        .filter(
+            LiveStream.provider_id == provider.id,
+            LiveStream.name.like("###%"),
+        )
+        .all()
+    ]
+    if sep_ids:
+        db.query(LiveStreamAlias).filter(
+            LiveStreamAlias.live_stream_id.in_(sep_ids)
+        ).delete(synchronize_session=False)
     db.query(LiveStream).filter(
         LiveStream.provider_id == provider.id,
         LiveStream.name.like("###%"),

@@ -35,6 +35,11 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
 from ..models import IPTVUser, MovieStream, SeriesStream
+from ..services.adult import (
+    adult_movie_category_ids,
+    adult_serie_category_ids,
+    apply_adult_filter,
+)
 from ..services.tmdb_client import TMDBClient, TMDBNotConfigured
 from .auth import get_current_user
 from .catalog import (
@@ -257,43 +262,60 @@ def get_recommendations(
     # those categories first. An empty list means "user explicitly
     # deselected every category for this kind" — skip the pool
     # outright (no recommendations of that type).
+    # Recommendations are a regular-content surface: never recommend adult
+    # titles, even if the client somehow passes an adult category id.
+    adult_movie_ids = adult_movie_category_ids(db, user.provider_id)
+    adult_serie_ids = adult_serie_category_ids(db, user.provider_id)
+
     if body.movie_category_ids is None:
         movie_rows = (
-            db.query(MovieStream)
-            .options(selectinload(MovieStream.genres))
-            .filter(MovieStream.provider_id == user.provider_id)
-            .filter(MovieStream.tmdb_id.isnot(None))
+            apply_adult_filter(
+                db.query(MovieStream)
+                .options(selectinload(MovieStream.genres))
+                .filter(MovieStream.provider_id == user.provider_id)
+                .filter(MovieStream.tmdb_id.isnot(None)),
+                MovieStream.movie_category_id, adult_movie_ids, False,
+            )
             .all()
         )
     elif not body.movie_category_ids:
         movie_rows = []
     else:
         movie_rows = (
-            db.query(MovieStream)
-            .options(selectinload(MovieStream.genres))
-            .filter(MovieStream.provider_id == user.provider_id)
-            .filter(MovieStream.tmdb_id.isnot(None))
-            .filter(MovieStream.movie_category_id.in_(body.movie_category_ids))
+            apply_adult_filter(
+                db.query(MovieStream)
+                .options(selectinload(MovieStream.genres))
+                .filter(MovieStream.provider_id == user.provider_id)
+                .filter(MovieStream.tmdb_id.isnot(None))
+                .filter(MovieStream.movie_category_id.in_(body.movie_category_ids)),
+                MovieStream.movie_category_id, adult_movie_ids, False,
+            )
             .all()
         )
 
     if body.series_category_ids is None:
         series_rows = (
-            db.query(SeriesStream)
-            .options(selectinload(SeriesStream.genres))
-            .filter(SeriesStream.provider_id == user.provider_id)
-            .filter(SeriesStream.tmdb_id.isnot(None))
+            apply_adult_filter(
+                db.query(SeriesStream)
+                .options(selectinload(SeriesStream.genres))
+                .filter(SeriesStream.provider_id == user.provider_id)
+                .filter(SeriesStream.tmdb_id.isnot(None)),
+                SeriesStream.series_category_id, adult_serie_ids, False,
+            )
             .all()
         )
     elif not body.series_category_ids:
         series_rows = []
     else:
         series_rows = (
-            db.query(SeriesStream)
-            .options(selectinload(SeriesStream.genres))
-            .filter(SeriesStream.provider_id == user.provider_id)
-            .filter(SeriesStream.tmdb_id.isnot(None))
-            .filter(SeriesStream.series_category_id.in_(body.series_category_ids))
+            apply_adult_filter(
+                db.query(SeriesStream)
+                .options(selectinload(SeriesStream.genres))
+                .filter(SeriesStream.provider_id == user.provider_id)
+                .filter(SeriesStream.tmdb_id.isnot(None))
+                .filter(SeriesStream.series_category_id.in_(body.series_category_ids)),
+                SeriesStream.series_category_id, adult_serie_ids, False,
+            )
             .all()
         )
 

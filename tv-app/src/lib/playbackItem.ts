@@ -26,6 +26,7 @@ export function playbackItemFor(open: PlayerOpen): PlaybackItem | null {
       backdrop: m.backdrop_path,
       year: m.year,
       genres: m.genres,
+      is_adult: m.is_adult,
     };
   }
   if (open.kind === "episode") {
@@ -43,6 +44,7 @@ export function playbackItemFor(open: PlayerOpen): PlaybackItem | null {
       season: ep.season_number,
       episode: ep.episode_num,
       genres: s.genres,
+      is_adult: s.is_adult,
     };
   }
   return null;

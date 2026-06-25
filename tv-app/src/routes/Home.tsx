@@ -608,7 +608,9 @@ export default function Home(): JSX.Element {
     const ls = latestSeries() ?? [];
     const tm = topMovies() ?? [];
 
-    const continueItems = getContinueWatchingItems(20);
+    // Adult content is suppressed at write-time; filter defensively too so any
+    // legacy/edge entry carrying the flag never shows on the home rail.
+    const continueItems = getContinueWatchingItems(20).filter((e) => !e.isAdult);
     if (continueItems.length > 0) {
       r.push({
         id: "continue",

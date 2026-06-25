@@ -53,6 +53,8 @@ import {
   type CategoryFilter,
   type ContentPrefsView,
 } from "../lib/contentPrefs";
+import { getShowAdultContent, setShowAdultContent } from "../lib/clientPreferences";
+import { ADULT_VISIBILITY_EVENT } from "../components/TopNav";
 import { useNavigationScope } from "../lib/navigation";
 import { setAppShellZone } from "../stores/shell";
 
@@ -289,6 +291,19 @@ export default function Profile(): JSX.Element {
   const [pinOk, setPinOk] = createSignal("");
   const [pinVerified, setPinVerified] = createSignal(false);
 
+  // "Show Adult content" toggle — reveals the PIN-gated Adult top-menu item
+  // (only effective when a PIN is also set; see TopNav).
+  const [showAdult, setShowAdult] = createSignal<boolean>(getShowAdultContent());
+  // Notify TopNav (localStorage isn't reactive across components).
+  const notifyAdultVisibility = () =>
+    window.dispatchEvent(new Event(ADULT_VISIBILITY_EVENT));
+  const toggleShowAdult = () => {
+    const next = !showAdult();
+    setShowAdult(next);
+    setShowAdultContent(next);
+    notifyAdultVisibility();
+  };
+
   // Adult content channels ---------------------------------------------------
   const [adultChannels, setAdultChannels] = createSignal<
     AdultChannel[] | null
@@ -359,7 +374,7 @@ export default function Profile(): JSX.Element {
         const pinRow: GridItem[] = hasPin()
           ? [{ id: "chg-pin" }, { id: "rm-pin", type: "danger" }]
           : [{ id: "set-pin" }];
-        const rows: GridItem[][] = [pinRow];
+        const rows: GridItem[][] = [pinRow, [{ id: "toggle-adult" }]];
         const ADULT_COLS = 2;
         const chs = adultChannels() ?? [];
         for (let r = 0; r * ADULT_COLS < chs.length; r++) {
@@ -605,6 +620,8 @@ export default function Profile(): JSX.Element {
     resetPin();
     setPinOk("PIN removed.");
     window.setTimeout(() => setPinOk(""), 3000);
+    // No PIN ⇒ Adult menu hidden regardless of the toggle.
+    notifyAdultVisibility();
   };
 
   const submitPin = () => {
@@ -632,6 +649,8 @@ export default function Profile(): JSX.Element {
         resetPin();
         setPinOk("PIN set.");
         window.setTimeout(() => setPinOk(""), 3000);
+        // PIN now exists — Adult menu may become visible if opted in.
+        notifyAdultVisibility();
       }
     } else if (mode === "change") {
       if (pinStep() === "verify") {
@@ -814,6 +833,9 @@ export default function Profile(): JSX.Element {
         break;
       case "rm-pin":
         removePin();
+        break;
+      case "toggle-adult":
+        toggleShowAdult();
         break;
       case "unlock":
         setPinMode("verify");
@@ -1555,6 +1577,23 @@ export default function Profile(): JSX.Element {
             </Show>
           </div>
 
+          {/* Show Adult content toggle (grid row 1). */}
+          <div class="pc-row">
+            <div
+              class={`pc-item ${isFoc(1, 0) ? "focused" : ""}`}
+              data-foc="1-0"
+              onClick={toggleShowAdult}
+            >
+              <span class="pc-cat-check">{showAdult() ? "✓" : ""}</span>
+              Show Adult content
+            </div>
+          </div>
+          <Show when={showAdult() && !hasPin()}>
+            <p class="pc-sub pc-sub--sm">
+              Set a PIN to enable the Adult menu.
+            </p>
+          </Show>
+
           <div class="pc-adult-header">
             <span class="pc-adult-icon">🔞</span>
             <span>Adult Content Channels</span>
@@ -1599,7 +1638,8 @@ export default function Profile(): JSX.Element {
               <div class="pc-adult-grid">
                 <For each={adultChList()}>
                   {(ch, ci) => {
-                    const r = () => 1 + Math.floor(ci() / ADULT_COLS);
+                    // Grid rows: 0 = PIN row, 1 = Show-Adult toggle, 2+ = channels.
+                    const r = () => 2 + Math.floor(ci() / ADULT_COLS);
                     const c = () => ci() % ADULT_COLS;
                     const sel = () => isAdultChSel(ch.id);
                     return (

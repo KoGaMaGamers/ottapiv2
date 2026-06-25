@@ -60,6 +60,7 @@ export interface LiveCategoryNode {
   id: number;
   name: string;
   category_id: number | null;
+  is_adult?: boolean;
   children: LiveCategoryNode[];
 }
 
@@ -68,6 +69,7 @@ export interface FlatCategory {
   category_id: number;
   name: string;
   language: string | null;
+  is_adult?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +87,7 @@ export interface LiveStreamItem {
   live_category_id: number | null;
   tv_archive: boolean;
   added: string | null;
+  is_adult?: boolean;
 }
 
 /**
@@ -133,6 +136,7 @@ export interface MovieListItem {
   duration_secs: number | null;
   added: string | null;
   genres: string[];
+  is_adult?: boolean;
 }
 
 export interface MovieDetail extends MovieListItem {
@@ -196,6 +200,7 @@ export interface SeriesListItem {
   last_modified: string | null;
   release_date: string | null;
   genres: string[];
+  is_adult?: boolean;
 }
 
 export interface SeriesDetail extends SeriesListItem {

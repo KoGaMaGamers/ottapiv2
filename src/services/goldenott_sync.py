@@ -9,6 +9,12 @@ from sqlalchemy.orm import Session
 from ..config import GOLDENOTT_PROVIDER_ID
 from ..database import SessionLocal
 from ..models import IPTVUser, XtreamProvider
+from .dns_health_service import (
+    _extract_parent_domain,
+    is_domain_healthy,
+    get_healthy_domain,
+    upsert_domain,
+)
 from .goldenott_client import GoldenOTTClient
 
 logger = logging.getLogger(__name__)
@@ -110,7 +116,9 @@ def sync_brand_domain(
     )
 
 
-def _apply_line_to_user(user: IPTVUser, detail: dict, provider_id: int, line_id: int) -> None:
+def _apply_line_to_user(
+    db: Session, user: IPTVUser, detail: dict, provider_id: int, line_id: int,
+) -> None:
     upstream_exp = _parse_iso_datetime(detail.get("exp_date"))
 
     user.reseller_line_id = line_id
@@ -128,8 +136,40 @@ def _apply_line_to_user(user: IPTVUser, detail: dict, provider_id: int, line_id:
 
     dns_link = (detail.get("dns_link") or "").rstrip("/")
     if dns_link:
-        user.base_url = dns_link
-        user.base_stream_url = _derive_base_stream_url(dns_link, user.port)
+        # Upsert the parent domain into provider_dns_entries so the
+        # health-check job tracks it going forward.
+        parent = _extract_parent_domain(dns_link)
+        if parent:
+            upsert_domain(db, provider_id, parent)
+
+        if user.base_url and user.base_url.rstrip("/") != dns_link:
+            # Upstream changed the dns_link. Only accept it if the new
+            # domain is healthy; otherwise keep the current working URL.
+            new_parent = parent
+            if new_parent and not is_domain_healthy(db, provider_id, new_parent):
+                # New domain is dead. Try to rewrite to a healthy one.
+                alt = get_healthy_domain(db, provider_id)
+                if alt and alt != new_parent:
+                    host = urlparse(dns_link).hostname or ""
+                    parts = host.split(".")
+                    sub = ".".join(parts[:-2]) if len(parts) > 2 else ""
+                    new_host = f"{sub}.{alt}" if sub else alt
+                    dns_link = f"http://{new_host}"
+                    logger.info(
+                        "dns_link domain unhealthy, rewriting: user=%s "
+                        "upstream=%s -> %s", user.username, detail.get("dns_link"), dns_link,
+                    )
+                else:
+                    logger.warning(
+                        "dns_link domain unhealthy, no alternative, keeping current: "
+                        "user=%s upstream=%s current=%s",
+                        user.username, dns_link, user.base_url,
+                    )
+                    dns_link = ""  # skip update
+
+        if dns_link:
+            user.base_url = dns_link
+            user.base_stream_url = _derive_base_stream_url(dns_link, user.port)
 
     user.provider_exp_date = upstream_exp
     if not user.subscription_enforced:
@@ -209,7 +249,7 @@ def sync_lines(
         else:
             summary.users_updated += 1
 
-        _apply_line_to_user(existing, detail, provider_id, line_id)
+        _apply_line_to_user(db, existing, detail, provider_id, line_id)
         existing.status = upstream_status
         existing.last_checked_at = datetime.utcnow()
 

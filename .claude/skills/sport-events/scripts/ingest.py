@@ -351,6 +351,13 @@ def _seed_alias(db, provider_id: int, broadcaster: str, live_stream_id: int, con
         live_stream_id=live_stream_id,
         confidence=confidence,
     ))
+    # Flush immediately so the existence check above sees this alias on
+    # the next call within the same run. The session has autoflush=False,
+    # and a fuzzy-matched broadcaster (e.g. "Telemundo") commonly appears
+    # on several events for the same provider; without this flush every
+    # occurrence re-adds the same (provider_id, alias) row and the batch
+    # dies with a duplicate-key IntegrityError at commit.
+    db.flush()
 
 
 # ---------------------------------------------------------------------------

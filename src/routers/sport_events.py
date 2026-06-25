@@ -124,11 +124,18 @@ def _resolve_all_for_provider(
         return []
 
     if provider_id not in channel_cache:
-        channel_cache[provider_id] = (
-            db.query(LiveStream)
-            .filter(LiveStream.provider_id == provider_id)
-            .all()
-        )
+        # Exclude adult channels — a sport broadcaster should never resolve to
+        # an adult-category stream (defense-in-depth; keeps the Adult catalog
+        # off the regular sport-events rail).
+        from ..services.adult import adult_live_category_ids
+        adult_ids = adult_live_category_ids(db, provider_id)
+        q = db.query(LiveStream).filter(LiveStream.provider_id == provider_id)
+        if adult_ids:
+            q = q.filter(
+                LiveStream.live_category_id.notin_(adult_ids)
+                | LiveStream.live_category_id.is_(None)
+            )
+        channel_cache[provider_id] = q.all()
     rows = channel_cache[provider_id]
     if not rows:
         return []

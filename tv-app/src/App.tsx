@@ -11,6 +11,7 @@ import Series from "./routes/Series";
 import SeriesDetail from "./routes/SeriesDetail";
 import Live from "./routes/Live";
 import Search from "./routes/Search";
+import Adult from "./routes/Adult";
 
 /**
  * Top-level router shell.
@@ -61,6 +62,7 @@ export default function App() {
           <Route path="/series/:id" component={() => <SeriesDetail />} />
           <Route path="/live" component={Live} />
           <Route path="/search" component={Search} />
+          <Route path="/adult" component={Adult} />
           <Route path="/profile" component={Profile} />
         </Route>
       </Router>

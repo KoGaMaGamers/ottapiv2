@@ -55,6 +55,8 @@ export interface PlaybackEntry {
   positionSec: number;
   durationSec: number;
   updatedAt: number;
+  /** Adult content is never recorded; present only for defensive filtering. */
+  isAdult?: boolean;
 }
 
 /**
@@ -83,6 +85,8 @@ export interface PlaybackItem {
   season?: number | string | null;
   episode?: number | string | null;
   container_extension?: string | null;
+  /** When true, the item belongs to an adult category — never recorded. */
+  is_adult?: boolean;
 }
 
 type PlaybackState = Record<string, PlaybackEntry>;
@@ -236,6 +240,9 @@ export function savePlaybackProgress(
   item: PlaybackItem,
   opts: SaveOpts = {},
 ): boolean {
+  // Adult content is excluded from every regular-content feature: never record
+  // resume position, history, or watchlist for it.
+  if (item.is_adult) return false;
   const key = getPlaybackKey(item);
   if (!key) return false;
   const position = normNum(opts.positionSec);

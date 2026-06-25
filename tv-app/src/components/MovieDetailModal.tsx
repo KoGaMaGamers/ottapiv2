@@ -119,8 +119,14 @@ export default function MovieDetailModal(
       year: d?.year ?? m.year ?? null,
       genres: d?.genres ?? m.genres ?? [],
       container_extension: d?.container_extension ?? null,
+      is_adult: d?.is_adult ?? m.is_adult,
     };
   };
+
+  // Adult content is excluded from regular features — no watchlist affordance.
+  const isAdult = createMemo<boolean>(
+    () => (detail()?.is_adult ?? props.movie.is_adult) === true,
+  );
 
   const inWatchlist = createMemo<boolean>(() => {
     watchlistState();
@@ -159,7 +165,7 @@ export default function MovieDetailModal(
       } else if (e.key === "ArrowLeft") {
         setActionIdx((i) => Math.max(0, i - 1));
       } else if (e.key === "ArrowRight") {
-        setActionIdx((i) => Math.min(1, i + 1));
+        setActionIdx((i) => Math.min(isAdult() ? 0 : 1, i + 1));
       } else if (e.key === "Enter" || e.key === " ") {
         if (actionIdx() === 0) props.onPlay();
         else if (actionIdx() === 1) onToggleWatchlist();
@@ -212,13 +218,15 @@ export default function MovieDetailModal(
             >
               ▶ Play Movie
             </button>
-            <button
-              class={`hp-btn secondary ${actionIdx() === 1 ? "mp-modal-action-focused" : ""}`}
-              onClick={onToggleWatchlist}
-              title={inWatchlist() ? "Remove from watchlist" : "Add to watchlist"}
-            >
-              {inWatchlist() ? "✓ In Watchlist" : "+ Add to Watchlist"}
-            </button>
+            <Show when={!isAdult()}>
+              <button
+                class={`hp-btn secondary ${actionIdx() === 1 ? "mp-modal-action-focused" : ""}`}
+                onClick={onToggleWatchlist}
+                title={inWatchlist() ? "Remove from watchlist" : "Add to watchlist"}
+              >
+                {inWatchlist() ? "✓ In Watchlist" : "+ Add to Watchlist"}
+              </button>
+            </Show>
           </div>
 
           <Show when={plot()}>
