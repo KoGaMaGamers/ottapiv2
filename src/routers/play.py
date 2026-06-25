@@ -11,15 +11,18 @@ from ..database import get_db
 from ..models import IPTVUser, LiveStream, MovieStream, SeriesEpisode
 from ..services.donor_service import (
     Allocation,
+    STREAM_OK,
+    STREAM_UNREACHABLE,
     allocate_or_reuse,
     build_stream_url,
-    check_stream_url,
     heartbeat as do_heartbeat,
     is_eligible,
     pick_url_owner,
+    probe_stream_url,
     release as do_release,
     report_bad_donor,
 )
+from ..services.dns_health_service import recheck_domain_now
 from .auth import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -87,13 +90,28 @@ def _allocate_validated(
     for attempt in range(_MAX_DONOR_TRIES):
         alloc = _allocate_or_raise(db, owner)
         url = build_stream_url(alloc.slot, kind, xtream_id, ext, db=db)
-        if check_stream_url(url):
+        verdict = probe_stream_url(url)
+
+        # Unreachable (DNS/TCP failure) is usually a provider domain rotation,
+        # not a dead account. Re-probe this donor's domain on demand; if it has
+        # rotated away, build_stream_url now routes through a healthy sibling
+        # domain — re-probe that before giving up on the donor.
+        if verdict == STREAM_UNREACHABLE:
+            recheck_domain_now(db, alloc.slot.provider_id, url)
+            url2 = build_stream_url(alloc.slot, kind, xtream_id, ext, db=db)
+            if url2 != url and probe_stream_url(url2) == STREAM_OK:
+                logger.info("play: donor=%s(id=%d) recovered via healthy domain rewrite",
+                            alloc.slot.username, alloc.slot.id)
+                return alloc, url2
+
+        if verdict == STREAM_OK:
             return alloc, url
+
         logger.info(
-            "play: donor=%s(id=%d) failed stream pre-check (attempt %d/%d) — rotating",
-            alloc.slot.username, alloc.slot.id, attempt + 1, _MAX_DONOR_TRIES,
+            "play: donor=%s(id=%d) failed stream pre-check (%s, attempt %d/%d) — rotating",
+            alloc.slot.username, alloc.slot.id, verdict, attempt + 1, _MAX_DONOR_TRIES,
         )
-        report_bad_donor(db, alloc.slot, reason="stream pre-check 4xx/unreachable")
+        report_bad_donor(db, alloc.slot, reason=f"stream pre-check {verdict}")
         do_release(db, owner, alloc.token)
     raise HTTPException(status_code=503, detail="no working stream slot; try again shortly")
 

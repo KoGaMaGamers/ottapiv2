@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..services.donor_service import donor_health_snapshot, donor_health_live_check
 from ..services.usage_stats_service import (
     build_provider_pressure_snapshot,
     collect_provider_pressure_samples,
@@ -76,6 +77,28 @@ def pressure_active(
 ):
     """Currently-locked allocations — who is watching what right now."""
     return {"allocations": get_active_allocations(db, provider_id=provider_id)}
+
+
+@router.get("/donor-health")
+def donor_health(
+    provider_id: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Cheap donor-health counts (quarantined / available / in-use + DNS
+    domain health). DB-only, safe to poll on the live refresh."""
+    return donor_health_snapshot(db, provider_id)
+
+
+@router.post("/donor-health/check")
+def donor_health_check(
+    provider_id: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_admin),
+):
+    """Real-time check: actively probe every donor's stream URL, quarantine the
+    bad ones, and return good/bad/unreachable counts + per-donor verdicts."""
+    return donor_health_live_check(db, provider_id)
 
 
 @router.get("/history")
@@ -207,6 +230,18 @@ _PAGE_HTML = """<!DOCTYPE html>
 
     <div class="panel">
       <div class="heading">
+        <h2>Donor health</h2>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <span class="count" id="donorMeta">—</span>
+          <button class="btn" id="donorCheckBtn" onclick="runDonorCheck()">Run live check</button>
+        </div>
+      </div>
+      <div class="cards" id="donorCards"></div>
+      <div class="count" id="donorDetail" style="margin-top:10px; line-height:1.5;"></div>
+    </div>
+
+    <div class="panel">
+      <div class="heading">
         <h2>Now streaming</h2>
         <div class="count" id="activeCount">—</div>
       </div>
@@ -266,6 +301,78 @@ _PAGE_HTML = """<!DOCTYPE html>
           <div class="sub">enforced renters / eligible</div>
         </div>
       `;
+    }
+
+    function renderDonorHealth(d) {
+      const cards = document.getElementById("donorCards");
+      const meta = document.getElementById("donorMeta");
+      const detail = document.getElementById("donorDetail");
+      if (!d || d.total === undefined) {
+        cards.innerHTML = "<div class='card'><div class='label'>No data</div></div>";
+        return;
+      }
+      // After a live probe we have real good/bad; otherwise show quarantine state.
+      const live = d.live && d.good !== undefined;
+      const goodVal = live ? d.good : d.available;
+      const badVal  = live ? d.bad  : d.quarantined;
+      const badDanger = badVal > 0;
+      const dnsDanger = d.dns_healthy < d.dns_total;
+      cards.innerHTML = `
+        <div class="card">
+          <div class="label">${live ? "Good (live)" : "Available"}</div>
+          <div class="value">${fmt(goodVal)}</div>
+          <div class="sub">of ${fmt(d.total)} donors</div>
+        </div>
+        <div class="card ${badDanger ? 'alert' : ''}">
+          <div class="label">${live ? "Bad (live)" : "Quarantined"}</div>
+          <div class="value ${badDanger ? 'danger' : ''}">${fmt(badVal)}</div>
+          <div class="sub">${live ? fmt(d.unreachable) + " unreachable (domain?)" : "recent 4xx / failed probe"}</div>
+        </div>
+        <div class="card">
+          <div class="label">In use now</div>
+          <div class="value">${fmt(d.in_use)}</div>
+          <div class="sub">currently streaming</div>
+        </div>
+        <div class="card ${dnsDanger ? 'alert' : ''}">
+          <div class="label">DNS domains</div>
+          <div class="value">${fmt(d.dns_healthy)}/${fmt(d.dns_total)}</div>
+          <div class="sub">healthy / known</div>
+        </div>
+      `;
+      meta.textContent = (live ? "live-checked" : "state") + " · "
+        + String(d.checked_at || "").replace("T", " ").replace("Z", "").slice(0, 19);
+      if (d.details && d.details.length) {
+        const bad = d.details.filter(x => x.verdict !== "ok");
+        detail.innerHTML = bad.length
+          ? "<span style='color:#fca5a5'>Bad:</span> " + bad.map(x => `${x.username} (${x.verdict})`).join(", ")
+          : "<span style='color:#86efac'>All donors responded OK.</span>";
+      } else {
+        detail.innerHTML = "";
+      }
+    }
+
+    async function loadDonorHealth() {
+      try {
+        renderDonorHealth(await fetchJson(
+          `/api/v1/admin/providers/pressure/donor-health?provider_id=${PROVIDER_ID}`));
+      } catch (e) { console.error(e); }
+    }
+
+    async function runDonorCheck() {
+      const btn = document.getElementById("donorCheckBtn");
+      const prev = btn.textContent;
+      btn.disabled = true; btn.textContent = "Checking…";
+      try {
+        const res = await fetch(
+          `/api/v1/admin/providers/pressure/donor-health/check?provider_id=${PROVIDER_ID}`,
+          { method: "POST", credentials: "same-origin" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        renderDonorHealth(await res.json());
+      } catch (e) {
+        alert("Live check failed: " + e.message);
+      } finally {
+        btn.disabled = false; btn.textContent = prev;
+      }
     }
 
     let chart = null;
@@ -380,6 +487,7 @@ _PAGE_HTML = """<!DOCTYPE html>
       } catch (e) {
         console.error(e);
       }
+      loadDonorHealth();   // cheap state snapshot; live probe is button-driven
     }
 
     async function snapshotNow() {

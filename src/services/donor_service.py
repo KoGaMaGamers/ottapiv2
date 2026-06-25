@@ -48,16 +48,26 @@ DONOR_STREAM_CHECK_TIMEOUT_SEC = 4.0
 _STREAM_CHECK_UA = "Mozilla/5.0 (Linux; Android 12; SmartTV) AppleWebKit/537.36"
 
 
-def check_stream_url(url: str) -> bool:
-    """Cheap liveness check on a built donor stream URL — WITHOUT consuming the
-    donor's connection slot.
+# Stream-probe verdicts.
+STREAM_OK = "ok"                 # panel answered 2xx/3xx — donor usable
+STREAM_REJECT = "reject"         # panel answered 4xx/5xx — account dead/expired/at-limit (domain is UP)
+STREAM_UNREACHABLE = "unreachable"  # DNS/conn failure — the donor's domain may have rotated/died
+
+
+def probe_stream_url(url: str) -> str:
+    """Liveness check on a built donor stream URL — WITHOUT consuming the
+    donor's connection slot. Returns one of STREAM_OK / STREAM_REJECT /
+    STREAM_UNREACHABLE.
 
     Good donors answer the first hop with a 2xx/3xx (typically a 302 redirect
     to the CDN node); dead / expired / at-connection-limit accounts answer
-    406/403/401 straight from the panel. We deliberately do NOT follow the
-    redirect, so the actual streaming node is never touched and no connection
-    is claimed (verified: repeated non-following probes don't burn the slot,
-    a real fetch right after still gets 206).
+    406/403/401 straight from the panel (REJECT — the domain itself is up). A
+    DNS-resolution or TCP failure means the stored domain is gone, which most
+    often is a provider DNS rotation (UNREACHABLE — worth a domain re-check
+    before blaming the donor). We deliberately do NOT follow the redirect, so
+    the streaming node is never touched and no connection is claimed (verified:
+    repeated non-following probes don't burn the slot, a real fetch right after
+    still gets 206).
     """
     try:
         resp = requests.get(
@@ -68,12 +78,17 @@ def check_stream_url(url: str) -> bool:
             stream=True,
         )
         try:
-            return resp.status_code < 400
+            return STREAM_OK if resp.status_code < 400 else STREAM_REJECT
         finally:
             resp.close()
     except requests.exceptions.RequestException as exc:
-        logger.info("stream check failed: url=%s err=%s", url, exc)
-        return False
+        logger.info("stream probe unreachable: url=%s err=%s", url, exc)
+        return STREAM_UNREACHABLE
+
+
+def check_stream_url(url: str) -> bool:
+    """Backward-compatible bool wrapper: True only when the donor is usable."""
+    return probe_stream_url(url) == STREAM_OK
 
 
 @dataclass
@@ -496,3 +511,108 @@ def build_stream_url(
         from .dns_health_service import rewrite_to_healthy
         base = rewrite_to_healthy(db, slot.provider_id, base)
     return f"{base}/{kind}/{slot.username}/{slot.password}/{xtream_id}.{ext}"
+
+
+# ---------------------------------------------------------------------------
+# Donor health overview (admin panel)
+# ---------------------------------------------------------------------------
+
+def _donor_base_query(db: Session, provider_id: int):
+    return (
+        db.query(IPTVUser)
+        .filter(IPTVUser.provider_id == provider_id)
+        .filter(IPTVUser.status.in_(["Active", "Almost Expired"]))
+    )
+
+
+def donor_health_snapshot(db: Session, provider_id: int) -> dict:
+    """Cheap, DB-only donor-health counts for the admin panel. Reflects the
+    CURRENT quarantine/allocation state without hitting the network — safe to
+    poll on a live refresh."""
+    from ..models import ProviderDnsEntry
+    now = datetime.utcnow()
+    base = _donor_base_query(db, provider_id)
+    total = base.count()
+    quarantined = base.filter(
+        IPTVUser.donor_unhealthy_until.isnot(None),
+        IPTVUser.donor_unhealthy_until > now,
+    ).count()
+    in_use = base.filter(
+        IPTVUser.allocation_in_use == True,  # noqa: E712
+        IPTVUser.allocation_lock_expires_at > now,
+    ).count()
+    dns_total = (
+        db.query(ProviderDnsEntry)
+        .filter(ProviderDnsEntry.provider_id == provider_id)
+        .count()
+    )
+    dns_healthy = (
+        db.query(ProviderDnsEntry)
+        .filter(ProviderDnsEntry.provider_id == provider_id,
+                ProviderDnsEntry.is_healthy == True)  # noqa: E712
+        .count()
+    )
+    return {
+        "provider_id": provider_id,
+        "total": total,
+        "available": max(0, total - quarantined),   # not currently quarantined
+        "quarantined": quarantined,
+        "in_use": in_use,
+        "dns_total": dns_total,
+        "dns_healthy": dns_healthy,
+        "checked_at": now.isoformat() + "Z",
+        "live": False,
+    }
+
+
+def donor_health_live_check(db: Session, provider_id: int) -> dict:
+    """Actively probe every donor's stream URL (concurrently, non-consuming)
+    against a sample title, quarantine the ones the panel rejects, and return
+    good/bad counts. This is the 'real-time check' the admin panel triggers —
+    it also cleans the pool (e.g. before a live-event rush)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from ..models import MovieStream
+    now = datetime.utcnow()
+
+    sample = (
+        db.query(MovieStream)
+        .filter(MovieStream.provider_id == provider_id)
+        .first()
+    )
+    if sample is None:
+        return {**donor_health_snapshot(db, provider_id),
+                "live": True, "error": "no sample title for provider"}
+
+    donors = _donor_base_query(db, provider_id).all()
+    ext = sample.container_extension or "mp4"
+    # Build URLs in the main thread (rewrite_to_healthy touches the session);
+    # the probes themselves are pure HTTP and run concurrently.
+    items = [(d, build_stream_url(d, "movie", sample.xtream_id, ext, db=db)) for d in donors]
+
+    verdicts: dict[int, str] = {}
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        for (d, _url), verdict in zip(items, ex.map(probe_stream_url, [u for _, u in items])):
+            verdicts[d.id] = verdict
+
+    good = bad = unreachable = 0
+    details = []
+    for d in donors:
+        verdict = verdicts.get(d.id, STREAM_UNREACHABLE)
+        if verdict == STREAM_OK:
+            good += 1
+        else:
+            bad += 1
+            if verdict == STREAM_UNREACHABLE:
+                unreachable += 1
+            _mark_donor_unhealthy(db, d, now, reason="admin live check")
+        details.append({"username": d.username, "id": d.id, "verdict": verdict})
+
+    snap = donor_health_snapshot(db, provider_id)
+    snap.update({
+        "live": True,
+        "good": good,
+        "bad": bad,
+        "unreachable": unreachable,
+        "details": sorted(details, key=lambda x: (x["verdict"] != STREAM_OK, x["username"])),
+    })
+    return snap

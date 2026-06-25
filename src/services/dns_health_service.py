@@ -168,6 +168,27 @@ def check_all_dns_health(db: Optional[Session] = None) -> dict:
 # Lookup helpers (used by sync + donor_service)
 # ---------------------------------------------------------------------------
 
+def recheck_domain_now(db: Session, provider_id: int, url_or_host: str) -> Optional[bool]:
+    """On-demand re-probe of the parent domain behind *url_or_host*.
+
+    Used when a donor stream URL comes back unreachable: instead of waiting up
+    to 5 min for the scheduled sweep, probe the domain immediately and persist
+    its health. Returns the new is_healthy (True/False), or None if no parent
+    domain could be parsed. After this, ``build_stream_url`` /
+    ``rewrite_to_healthy`` will route around a domain that just rotated away.
+    """
+    parent = _extract_parent_domain(url_or_host)
+    if not parent:
+        return None
+    entry = upsert_domain(db, provider_id, parent)
+    healthy = check_dns_health(db, entry)
+    db.commit()
+    if not healthy:
+        logger.warning("dns recheck: provider=%d domain=%s is DOWN (rotation?)",
+                       provider_id, parent)
+    return healthy
+
+
 def get_healthy_domain(db: Session, provider_id: int) -> Optional[str]:
     """Return any healthy parent domain for this provider, or None."""
     entry = (
