@@ -22,15 +22,17 @@ logger = logging.getLogger(__name__)
 
 # On-demand domain refresh throttle: at most one GoldenOTT /domains call per
 # provider per window, so a burst of plays hitting a rotated domain doesn't
-# hammer the API (or trip its 429 limiter).
-_last_domain_refresh: dict[int, datetime] = {}
+# hammer the API (or trip its 429 limiter). The last-refresh time is persisted
+# on xtream_providers.domains_refreshed_at so it survives restarts and is the
+# throttle source of truth (no per-process in-memory state).
 _DOMAIN_REFRESH_THROTTLE_SEC = 60
 
 
-def last_domain_refresh_at(provider_id: int) -> Optional[datetime]:
+def last_domain_refresh_at(db: Session, provider_id: int) -> Optional[datetime]:
     """When GoldenOTT /domains was last fetched for this provider (on-demand or
-    scheduled), or None since process start. Surfaced on the admin panel."""
-    return _last_domain_refresh.get(provider_id)
+    scheduled), or None. Read from the persisted provider row."""
+    provider = db.get(XtreamProvider, provider_id)
+    return provider.domains_refreshed_at if provider else None
 
 
 def _register_domain_healthy(db: Session, provider_id: int, raw_domain: str) -> Optional[str]:
@@ -59,10 +61,15 @@ def refresh_provider_domains_on_demand(
     if provider_id != GOLDENOTT_PROVIDER_ID:
         return None
     now = datetime.utcnow()
-    last = _last_domain_refresh.get(provider_id)
+    provider = db.get(XtreamProvider, provider_id)
+    last = provider.domains_refreshed_at if provider else None
     if not force and last and (now - last).total_seconds() < _DOMAIN_REFRESH_THROTTLE_SEC:
         return get_healthy_domain(db, provider_id)
-    _last_domain_refresh[provider_id] = now
+    # Stamp + commit the attempt up front so a failed/slow call still throttles
+    # the next play (and the timestamp persists across restarts).
+    if provider:
+        provider.domains_refreshed_at = now
+        db.commit()
 
     try:
         client = GoldenOTTClient(timeout=8)
@@ -161,7 +168,6 @@ def sync_brand_domain(
     if not domains:
         summary.errors.append("no domains returned by /v1/account/domains")
         return
-    _last_domain_refresh[provider_id] = datetime.utcnow()
 
     brand_domain = domains[0].get("domain")
     new_url = _normalize_domain_to_url(brand_domain or "")
@@ -174,6 +180,8 @@ def sync_brand_domain(
         summary.errors.append(f"provider id={provider_id} not found")
         return
 
+    # Record the GoldenOTT /domains fetch time (committed by run_sync).
+    provider.domains_refreshed_at = datetime.utcnow()
     summary.brand_domain_before = provider.base_url
     summary.brand_domain_after = new_url
 

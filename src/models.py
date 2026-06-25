@@ -35,6 +35,11 @@ class XtreamProvider(Base):
     last_refreshed_at = Column(DateTime, nullable=True)
     last_synced_at = Column(DateTime, nullable=True)
     sync_started_at = Column(DateTime, nullable=True)
+    # Last time GoldenOTT /v1/account/domains was fetched for this provider
+    # (on-demand rotation recovery or the scheduled brand-domain sync). Persisted
+    # so the admin donor-health panel survives restarts and it doubles as the
+    # on-demand refresh throttle.
+    domains_refreshed_at = Column(DateTime, nullable=True)
     active_master_user_id = Column(Integer, ForeignKey("iptv_users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

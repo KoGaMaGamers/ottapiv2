@@ -531,7 +531,6 @@ def donor_health_snapshot(db: Session, provider_id: int) -> dict:
     poll on a live refresh."""
     from ..models import ProviderDnsEntry, XtreamProvider
     from .dns_health_service import _extract_parent_domain, get_healthy_domain
-    from .goldenott_sync import last_domain_refresh_at
     now = datetime.utcnow()
     base = _donor_base_query(db, provider_id)
     total = base.count()
@@ -565,7 +564,7 @@ def donor_health_snapshot(db: Session, provider_id: int) -> dict:
         .filter(ProviderDnsEntry.provider_id == provider_id)
         .scalar()
     )
-    goldenott_refresh = last_domain_refresh_at(provider_id)
+    goldenott_refresh = provider.domains_refreshed_at if provider else None
 
     return {
         "provider_id": provider_id,
