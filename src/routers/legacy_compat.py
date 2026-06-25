@@ -378,6 +378,9 @@ def legacy_stream_genres(
 @router.get("/api/v1/user/streams/live-categories")
 def legacy_live_categories(
     parent_id: Optional[int] = Query(None, description="0 = root nodes; N = children of N"),
+    adult_only: bool = Query(
+        False, description="Return ONLY adult categories (Adult page). Default excludes them."
+    ),
     user: IPTVUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -387,7 +390,7 @@ def legacy_live_categories(
     rows = (
         db.query(LiveCategory)
         .filter(LiveCategory.provider_id == user.provider_id)
-        .filter(LiveCategory.is_adult.is_(False))
+        .filter(LiveCategory.is_adult.is_(True) if adult_only else LiveCategory.is_adult.is_(False))
         .order_by(LiveCategory.parent_id.asc(), LiveCategory.category_name.asc())
         .all()
     )
@@ -416,13 +419,16 @@ def legacy_live_categories(
 
 @router.get("/api/v1/user/streams/vod-categories")
 def legacy_vod_categories(
+    adult_only: bool = Query(
+        False, description="Return ONLY adult categories (Adult page). Default excludes them."
+    ),
     user: IPTVUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     rows = (
         db.query(MovieCategory)
         .filter(MovieCategory.provider_id == user.provider_id)
-        .filter(MovieCategory.is_adult.is_(False))
+        .filter(MovieCategory.is_adult.is_(True) if adult_only else MovieCategory.is_adult.is_(False))
         .order_by(MovieCategory.category_name.asc())
         .all()
     )
@@ -501,6 +507,9 @@ def legacy_live(
     category_id: Optional[int] = Query(None),
     name: Optional[str] = Query(None),
     tv_archive: Optional[bool] = Query(None),
+    adult_only: bool = Query(
+        False, description="Return ONLY adult channels (Adult page). Default excludes them."
+    ),
     limit: int = Query(200, ge=1, le=_MAX_ROWS),
     offset: int = Query(0, ge=0),
     user: IPTVUser = Depends(get_current_user),
@@ -516,7 +525,7 @@ def legacy_live(
         q = q.filter(LiveStream.tv_archive.is_(True))
     q = apply_adult_filter(
         q, LiveStream.live_category_id,
-        adult_live_category_ids(db, user.provider_id), False,
+        adult_live_category_ids(db, user.provider_id), adult_only,
     )
     q = q.order_by(LiveStream.xtream_live_id.asc(), LiveStream.id.asc())
     rows = q.offset(offset).limit(limit).all()
@@ -536,6 +545,9 @@ def legacy_vod(
     sort: Optional[str] = Query(
         None,
         description="added_desc | year_desc | rating_desc | popularity_desc | name_asc (default: added_desc)",
+    ),
+    adult_only: bool = Query(
+        False, description="Return ONLY adult movies (Adult page). Default excludes them."
     ),
     limit: int = Query(20, ge=1, le=_MAX_ROWS),
     offset: int = Query(0, ge=0),
@@ -581,7 +593,7 @@ def legacy_vod(
         )
     q = apply_adult_filter(
         q, MovieStream.movie_category_id,
-        adult_movie_category_ids(db, user.provider_id), False,
+        adult_movie_category_ids(db, user.provider_id), adult_only,
     )
     q = q.order_by(*_movie_sort_clause(sort))
     rows = q.offset(offset).limit(limit).all()
