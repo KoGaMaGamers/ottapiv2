@@ -39,7 +39,7 @@ from urllib.parse import urlparse, parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
@@ -169,11 +169,14 @@ def _movie_legacy_shape(m: MovieStream) -> Dict[str, Any]:
     }
 
 
-def _series_legacy_shape(s: SeriesStream) -> Dict[str, Any]:
+def _series_legacy_shape(s: SeriesStream, episode_count: Optional[int] = None) -> Dict[str, Any]:
     genres_list = [g.name for g in (s.genres or [])]
     return {
         "id": s.id,
         "xtream_id": s.xtream_id,
+        # Total ACTUAL synced episodes across all seasons (null when the caller
+        # didn't compute it). Used by the grid card to show "how many episodes".
+        "episode_count": episode_count,
         "name": s.name,
         "cover": s.cover,
         "stream_icon": s.cover,
@@ -228,13 +231,17 @@ def _episode_legacy_shape(ep: SeriesEpisode) -> Dict[str, Any]:
     }
 
 
-def _season_legacy_shape(se: SeriesSeason) -> Dict[str, Any]:
+def _season_legacy_shape(se: SeriesSeason, episode_count: Optional[int] = None) -> Dict[str, Any]:
+    # `episode_count` override = ACTUAL synced episodes for the season. The
+    # stored se.episode_count is provider/TMDB metadata and is frequently wrong
+    # (too high or too low vs what's actually available), so callers that can
+    # count the real rows pass it in.
     return {
         "id": se.id,
         "season_number": se.season_number,
         "name": se.name,
         "overview": se.overview,
-        "episode_count": se.episode_count,
+        "episode_count": episode_count if episode_count is not None else se.episode_count,
         "air_date": _date_iso(se.air_date),
         "cover": se.cover or se.cover_big,
         "cover_big": se.cover_big,
@@ -656,7 +663,17 @@ def legacy_series(
     )
     q = q.order_by(*_series_sort_clause(sort))
     rows = q.offset(offset).limit(limit).all()
-    return [_series_legacy_shape(s) for s in rows]
+    # Total ACTUAL synced episodes per series, for the grid card.
+    series_ids = [s.id for s in rows]
+    ep_counts: Dict[int, int] = {}
+    if series_ids:
+        ep_counts = dict(
+            db.query(SeriesEpisode.series_id, func.count(SeriesEpisode.id))
+            .filter(SeriesEpisode.series_id.in_(series_ids))
+            .group_by(SeriesEpisode.series_id)
+            .all()
+        )
+    return [_series_legacy_shape(s, episode_count=int(ep_counts.get(s.id, 0))) for s in rows]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -679,7 +696,17 @@ def legacy_series_seasons(
     if series is None:
         raise HTTPException(status_code=404, detail="series not found")
     seasons = sorted(series.seasons, key=lambda x: x.season_number)
-    return [_season_legacy_shape(se) for se in seasons]
+    # Count the ACTUAL synced episodes per season (provider metadata lies).
+    counts = dict(
+        db.query(SeriesEpisode.season_number, func.count(SeriesEpisode.id))
+        .filter(SeriesEpisode.series_id == series_id)
+        .group_by(SeriesEpisode.season_number)
+        .all()
+    )
+    return [
+        _season_legacy_shape(se, episode_count=int(counts.get(se.season_number, 0)))
+        for se in seasons
+    ]
 
 
 @router.get("/api/v1/user/streams/series/{series_id}/episodes")
