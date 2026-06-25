@@ -173,8 +173,13 @@ def stream_proxy(
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise HTTPException(status_code=422, detail="invalid proxy url")
 
+    # ALWAYS present a browser User-Agent to the provider CDN. The VOD CDN
+    # (cloudvix/vexovrix…) resets connections from non-browser UAs (curl etc.),
+    # so forwarding the client's UA is fragile — a stray non-browser UA (or one
+    # altered by an intermediary proxy) makes the whole movie fail. The provider
+    # only needs a browser-like UA; the real client identity is irrelevant here.
     fwd_headers = {
-        "User-Agent":      request.headers.get("user-agent") or _FALLBACK_UA,
+        "User-Agent":      _FALLBACK_UA,
         "Accept":          request.headers.get("accept") or "*/*",
         "Accept-Language": request.headers.get("accept-language") or "en-US,en;q=0.9",
     }
@@ -185,17 +190,38 @@ def stream_proxy(
     # the body if it's an HLS playlist, otherwise pipe the bytes through.
     method = request.method.upper()
     timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
-    client = httpx.Client(follow_redirects=True, timeout=timeout)
 
-    try:
-        upstream = client.send(
-            client.build_request(method, url, headers=fwd_headers),
-            stream=True,
+    # The provider's VOD CDN (cloudvix/vexovrix…) intermittently resets the
+    # connection (Errno 104) / rate-limits the datacenter IP at connect time.
+    # A single failure would surface as a 502 and stall the browser's <video>,
+    # so retry the initial open a few times with a small backoff — the reset
+    # happens before any body is sent, so a fresh attempt almost always
+    # succeeds. (Live/HLS rarely hits this because each segment is re-requested;
+    # progressive MP4 does, since one failed open kills the whole playback.)
+    _MAX_TRIES = 3
+    client = None
+    upstream = None
+    last_exc: Optional[Exception] = None
+    for attempt in range(_MAX_TRIES):
+        client = httpx.Client(follow_redirects=True, timeout=timeout)
+        try:
+            upstream = client.send(
+                client.build_request(method, url, headers=fwd_headers),
+                stream=True,
+            )
+            break
+        except httpx.RequestError as exc:
+            last_exc = exc
+            client.close()
+            client = None
+            if attempt < _MAX_TRIES - 1:
+                time.sleep(0.4 * (attempt + 1))
+    if upstream is None or client is None:
+        logger.warning(
+            "stream-proxy upstream error %s after %d tries: %s",
+            url, _MAX_TRIES, last_exc,
         )
-    except httpx.RequestError as exc:
-        client.close()
-        logger.warning("stream-proxy upstream error %s: %s", url, exc)
-        raise HTTPException(status_code=502, detail="upstream unreachable") from exc
+        raise HTTPException(status_code=502, detail="upstream unreachable") from last_exc
 
     # Final URL after redirects — needed for M3U8 base resolution.
     final_url = str(upstream.url)
@@ -211,6 +237,14 @@ def stream_proxy(
         if k.lower() not in _HOP_BY_HOP
     }
     out_headers["Access-Control-Allow-Origin"] = "*"
+    out_headers["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
+    # The provider returns a non-standard Accept-Ranges (e.g. "0-838263481").
+    # Browsers expect the token "bytes"; a malformed value can make a player
+    # treat a moov-at-end MP4 as non-seekable and hang. Since the upstream does
+    # honour Range (it answers 206 + Content-Range), advertise it correctly.
+    for _k in [k for k in out_headers if k.lower() == "accept-ranges"]:
+        out_headers.pop(_k, None)
+    out_headers["Accept-Ranges"] = "bytes"
 
     if is_hls:
         try:
