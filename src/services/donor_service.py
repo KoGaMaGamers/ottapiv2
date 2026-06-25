@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import requests
-from sqlalchemy import or_, update
+from sqlalchemy import func, or_, update
 from sqlalchemy.orm import Session
 
 from ..config import ALLOCATION_TTL_SEC
@@ -529,7 +529,9 @@ def donor_health_snapshot(db: Session, provider_id: int) -> dict:
     """Cheap, DB-only donor-health counts for the admin panel. Reflects the
     CURRENT quarantine/allocation state without hitting the network — safe to
     poll on a live refresh."""
-    from ..models import ProviderDnsEntry
+    from ..models import ProviderDnsEntry, XtreamProvider
+    from .dns_health_service import _extract_parent_domain, get_healthy_domain
+    from .goldenott_sync import last_domain_refresh_at
     now = datetime.utcnow()
     base = _donor_base_query(db, provider_id)
     total = base.count()
@@ -552,6 +554,19 @@ def donor_health_snapshot(db: Session, provider_id: int) -> dict:
                 ProviderDnsEntry.is_healthy == True)  # noqa: E712
         .count()
     )
+
+    # GoldenOTT / brand-domain context: the authoritative current domain, the
+    # one stream URLs actually route through, and when each was last verified.
+    provider = db.get(XtreamProvider, provider_id)
+    brand_domain = _extract_parent_domain(provider.base_url) if provider and provider.base_url else None
+    healthy_domain = get_healthy_domain(db, provider_id)
+    dns_last_checked = (
+        db.query(func.max(ProviderDnsEntry.last_checked_at))
+        .filter(ProviderDnsEntry.provider_id == provider_id)
+        .scalar()
+    )
+    goldenott_refresh = last_domain_refresh_at(provider_id)
+
     return {
         "provider_id": provider_id,
         "total": total,
@@ -560,6 +575,10 @@ def donor_health_snapshot(db: Session, provider_id: int) -> dict:
         "in_use": in_use,
         "dns_total": dns_total,
         "dns_healthy": dns_healthy,
+        "brand_domain": brand_domain,
+        "healthy_domain": healthy_domain,
+        "dns_last_checked": (dns_last_checked.isoformat() + "Z") if dns_last_checked else None,
+        "goldenott_refresh_at": (goldenott_refresh.isoformat() + "Z") if goldenott_refresh else None,
         "checked_at": now.isoformat() + "Z",
         "live": False,
     }

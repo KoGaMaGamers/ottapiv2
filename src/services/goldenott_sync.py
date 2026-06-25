@@ -27,6 +27,12 @@ _last_domain_refresh: dict[int, datetime] = {}
 _DOMAIN_REFRESH_THROTTLE_SEC = 60
 
 
+def last_domain_refresh_at(provider_id: int) -> Optional[datetime]:
+    """When GoldenOTT /domains was last fetched for this provider (on-demand or
+    scheduled), or None since process start. Surfaced on the admin panel."""
+    return _last_domain_refresh.get(provider_id)
+
+
 def _register_domain_healthy(db: Session, provider_id: int, raw_domain: str) -> Optional[str]:
     """Upsert *raw_domain* into provider_dns_entries and probe it now so
     rewrite_to_healthy can immediately route through it. Returns the parent
@@ -155,6 +161,7 @@ def sync_brand_domain(
     if not domains:
         summary.errors.append("no domains returned by /v1/account/domains")
         return
+    _last_domain_refresh[provider_id] = datetime.utcnow()
 
     brand_domain = domains[0].get("domain")
     new_url = _normalize_domain_to_url(brand_domain or "")

@@ -338,17 +338,26 @@ _PAGE_HTML = """<!DOCTYPE html>
           <div class="value">${fmt(d.dns_healthy)}/${fmt(d.dns_total)}</div>
           <div class="sub">healthy / known</div>
         </div>
+        <div class="card">
+          <div class="label">GoldenOTT domain</div>
+          <div class="value" style="font-size:18px; word-break:break-all;">${d.brand_domain || "—"}</div>
+          <div class="sub">${d.healthy_domain && d.healthy_domain !== d.brand_domain
+            ? "routing via " + d.healthy_domain : "authoritative brand domain"}</div>
+        </div>
       `;
       meta.textContent = (live ? "live-checked" : "state") + " · "
         + String(d.checked_at || "").replace("T", " ").replace("Z", "").slice(0, 19);
+      const shortTs = (ts) => ts
+        ? String(ts).replace("T", " ").replace("Z", "").slice(0, 19) : "never (since restart)";
+      let line = `GoldenOTT /domains refreshed: <b>${shortTs(d.goldenott_refresh_at)}</b>`
+        + ` · DNS probed: <b>${shortTs(d.dns_last_checked)}</b>`;
       if (d.details && d.details.length) {
         const bad = d.details.filter(x => x.verdict !== "ok");
-        detail.innerHTML = bad.length
+        line += "<br>" + (bad.length
           ? "<span style='color:#fca5a5'>Bad:</span> " + bad.map(x => `${x.username} (${x.verdict})`).join(", ")
-          : "<span style='color:#86efac'>All donors responded OK.</span>";
-      } else {
-        detail.innerHTML = "";
+          : "<span style='color:#86efac'>All donors responded OK.</span>");
       }
+      detail.innerHTML = line;
     }
 
     async function loadDonorHealth() {
