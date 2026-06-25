@@ -13,6 +13,7 @@ from ..services.donor_service import (
     Allocation,
     allocate_or_reuse,
     build_stream_url,
+    check_stream_url,
     heartbeat as do_heartbeat,
     is_eligible,
     pick_url_owner,
@@ -65,6 +66,38 @@ def _allocate_or_raise(db: Session, owner: IPTVUser) -> Allocation:
     raise HTTPException(status_code=503, detail="no slot available; try again shortly")
 
 
+# How many donors to try before giving up. Each bad donor (stream URL the panel
+# rejects with 406/4xx — dead, expired, or at its connection limit) is
+# quarantined and we rotate to the next, so the client never sees the 406.
+_MAX_DONOR_TRIES = 4
+
+
+def _allocate_validated(
+    db: Session, owner: IPTVUser, kind: str, xtream_id, ext: str,
+) -> tuple[Allocation, str]:
+    """Allocate a donor whose built stream URL actually responds, rotating past
+    donors the panel rejects. Returns (allocation, url).
+
+    Pre-validating server-side turns the old client-visible 406/ERR_NET_IO
+    (intermittent, retry-to-win) into a single request that already holds a
+    working URL — without consuming the donor's connection slot (see
+    check_stream_url). Self-heals: rejected donors are quarantined so later
+    plays skip them.
+    """
+    for attempt in range(_MAX_DONOR_TRIES):
+        alloc = _allocate_or_raise(db, owner)
+        url = build_stream_url(alloc.slot, kind, xtream_id, ext, db=db)
+        if check_stream_url(url):
+            return alloc, url
+        logger.info(
+            "play: donor=%s(id=%d) failed stream pre-check (attempt %d/%d) — rotating",
+            alloc.slot.username, alloc.slot.id, attempt + 1, _MAX_DONOR_TRIES,
+        )
+        report_bad_donor(db, alloc.slot, reason="stream pre-check 4xx/unreachable")
+        do_release(db, owner, alloc.token)
+    raise HTTPException(status_code=503, detail="no working stream slot; try again shortly")
+
+
 def _play_response(alloc: Allocation, url: str) -> PlayResponse:
     return PlayResponse(
         stream_url=url,
@@ -85,9 +118,8 @@ def play_movie(
     if movie is None or movie.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="movie not found")
 
-    alloc = _allocate_or_raise(db, user)
     ext = movie.container_extension or "mp4"
-    url = build_stream_url(alloc.slot, "movie", movie.xtream_id, ext, db=db)
+    alloc, url = _allocate_validated(db, user, "movie", movie.xtream_id, ext)
     logger.info("play_movie: requester=%s(id=%d) -> donor=%s(id=%d) url=%s",
                 user.username, user.id, alloc.slot.username, alloc.slot.id, url)
     return _play_response(alloc, url)
@@ -103,9 +135,8 @@ def play_live(
     if live is None or live.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="live stream not found")
 
-    alloc = _allocate_or_raise(db, user)
     ext = (user.preferred_output or "m3u8")
-    url = build_stream_url(alloc.slot, "live", live.stream_id, ext, db=db)
+    alloc, url = _allocate_validated(db, user, "live", live.stream_id, ext)
     logger.info("play_live: requester=%s(id=%d) -> donor=%s(id=%d) url=%s",
                 user.username, user.id, alloc.slot.username, alloc.slot.id, url)
     return _play_response(alloc, url)
@@ -121,9 +152,10 @@ def play_episode(
     if ep is None or ep.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="episode not found")
 
-    alloc = _allocate_or_raise(db, user)
     ext = ep.container_extension or "mkv"
-    url = build_stream_url(alloc.slot, "series", ep.xtream_id, ext, db=db)
+    alloc, url = _allocate_validated(db, user, "series", ep.xtream_id, ext)
+    logger.info("play_episode: requester=%s(id=%d) -> donor=%s(id=%d) url=%s",
+                user.username, user.id, alloc.slot.username, alloc.slot.id, url)
     return _play_response(alloc, url)
 
 

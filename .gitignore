@@ -7,3 +7,7 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Release artifacts served from static/app (large binaries + local backups)
+static/app/*.apk
+static/app/*.bak

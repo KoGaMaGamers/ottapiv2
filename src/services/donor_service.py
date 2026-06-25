@@ -43,6 +43,37 @@ DONOR_UNHEALTHY_TTL_SEC = 1800           # 30 min
 # absorb most traffic.
 DONOR_HEALTH_FRESH_SEC = 600             # 10 min
 DONOR_PROBE_TIMEOUT_SEC = 3.5
+# Liveness check on the *built stream URL* before handing it to the client.
+DONOR_STREAM_CHECK_TIMEOUT_SEC = 4.0
+_STREAM_CHECK_UA = "Mozilla/5.0 (Linux; Android 12; SmartTV) AppleWebKit/537.36"
+
+
+def check_stream_url(url: str) -> bool:
+    """Cheap liveness check on a built donor stream URL — WITHOUT consuming the
+    donor's connection slot.
+
+    Good donors answer the first hop with a 2xx/3xx (typically a 302 redirect
+    to the CDN node); dead / expired / at-connection-limit accounts answer
+    406/403/401 straight from the panel. We deliberately do NOT follow the
+    redirect, so the actual streaming node is never touched and no connection
+    is claimed (verified: repeated non-following probes don't burn the slot,
+    a real fetch right after still gets 206).
+    """
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": _STREAM_CHECK_UA, "Range": "bytes=0-0"},
+            timeout=DONOR_STREAM_CHECK_TIMEOUT_SEC,
+            allow_redirects=False,
+            stream=True,
+        )
+        try:
+            return resp.status_code < 400
+        finally:
+            resp.close()
+    except requests.exceptions.RequestException as exc:
+        logger.info("stream check failed: url=%s err=%s", url, exc)
+        return False
 
 
 @dataclass
