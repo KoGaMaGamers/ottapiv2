@@ -11,6 +11,7 @@ from ..database import SessionLocal
 from ..models import IPTVUser, XtreamProvider
 from .dns_health_service import (
     _extract_parent_domain,
+    check_dns_health,
     is_domain_healthy,
     get_healthy_domain,
     upsert_domain,
@@ -18,6 +19,70 @@ from .dns_health_service import (
 from .goldenott_client import GoldenOTTClient
 
 logger = logging.getLogger(__name__)
+
+# On-demand domain refresh throttle: at most one GoldenOTT /domains call per
+# provider per window, so a burst of plays hitting a rotated domain doesn't
+# hammer the API (or trip its 429 limiter).
+_last_domain_refresh: dict[int, datetime] = {}
+_DOMAIN_REFRESH_THROTTLE_SEC = 60
+
+
+def _register_domain_healthy(db: Session, provider_id: int, raw_domain: str) -> Optional[str]:
+    """Upsert *raw_domain* into provider_dns_entries and probe it now so
+    rewrite_to_healthy can immediately route through it. Returns the parent
+    domain if it probed healthy, else None."""
+    parent = _extract_parent_domain(raw_domain or "")
+    if not parent:
+        return None
+    entry = upsert_domain(db, provider_id, parent)
+    return parent if check_dns_health(db, entry) else None
+
+
+def refresh_provider_domains_on_demand(
+    db: Session, provider_id: int, *, force: bool = False,
+) -> Optional[str]:
+    """Ask GoldenOTT for the provider's CURRENT domain(s) — the authoritative
+    rotation source — register/probe them in provider_dns_entries, refresh
+    provider.base_url, and return a healthy domain (or None).
+
+    Hot-path safe: only for the GoldenOTT-managed provider, throttled per
+    provider, short timeout, fully guarded. Called when a donor stream URL is
+    UNREACHABLE and no healthy domain is already known (likely a rotation to a
+    brand-new domain the periodic sweep hasn't caught yet).
+    """
+    if provider_id != GOLDENOTT_PROVIDER_ID:
+        return None
+    now = datetime.utcnow()
+    last = _last_domain_refresh.get(provider_id)
+    if not force and last and (now - last).total_seconds() < _DOMAIN_REFRESH_THROTTLE_SEC:
+        return get_healthy_domain(db, provider_id)
+    _last_domain_refresh[provider_id] = now
+
+    try:
+        client = GoldenOTTClient(timeout=8)
+        domains = client.get_domains()
+    except Exception as exc:
+        logger.warning("on-demand GoldenOTT get_domains failed: %s", exc)
+        return get_healthy_domain(db, provider_id)
+    if not domains:
+        return get_healthy_domain(db, provider_id)
+
+    healthy: Optional[str] = None
+    for d in domains:
+        got = _register_domain_healthy(db, provider_id, d.get("domain") or "")
+        if got and healthy is None:
+            healthy = got
+
+    # Keep the provider brand URL current too.
+    new_url = _normalize_domain_to_url(domains[0].get("domain") or "")
+    provider = db.get(XtreamProvider, provider_id)
+    if provider and new_url and (provider.base_url or "").rstrip("/") != new_url.rstrip("/"):
+        logger.info("on-demand brand domain update provider=%d: %s -> %s",
+                    provider_id, provider.base_url, new_url)
+        provider.base_url = new_url
+
+    db.commit()
+    return healthy or get_healthy_domain(db, provider_id)
 
 REMOVED_STATUS = "Removed"
 
@@ -104,6 +169,11 @@ def sync_brand_domain(
 
     summary.brand_domain_before = provider.base_url
     summary.brand_domain_after = new_url
+
+    # Register + probe the brand domain so provider_dns_entries tracks it and
+    # rewrite_to_healthy can route through it immediately (previously the brand
+    # domain was only health-tracked once a per-user line carried it).
+    _register_domain_healthy(db, provider_id, brand_domain)
 
     if (provider.base_url or "").rstrip("/") == new_url.rstrip("/"):
         return

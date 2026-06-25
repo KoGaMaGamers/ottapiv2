@@ -23,6 +23,7 @@ from ..services.donor_service import (
     report_bad_donor,
 )
 from ..services.dns_health_service import recheck_domain_now
+from ..services.goldenott_sync import refresh_provider_domains_on_demand
 from .auth import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -93,16 +94,25 @@ def _allocate_validated(
         verdict = probe_stream_url(url)
 
         # Unreachable (DNS/TCP failure) is usually a provider domain rotation,
-        # not a dead account. Re-probe this donor's domain on demand; if it has
-        # rotated away, build_stream_url now routes through a healthy sibling
-        # domain — re-probe that before giving up on the donor.
+        # not a dead account.
         if verdict == STREAM_UNREACHABLE:
+            # (1) Cheap: re-probe this donor's domain; if it just died,
+            # build_stream_url routes through a healthy sibling we already know.
             recheck_domain_now(db, alloc.slot.provider_id, url)
             url2 = build_stream_url(alloc.slot, kind, xtream_id, ext, db=db)
             if url2 != url and probe_stream_url(url2) == STREAM_OK:
-                logger.info("play: donor=%s(id=%d) recovered via healthy domain rewrite",
+                logger.info("play: donor=%s(id=%d) recovered via known healthy domain",
                             alloc.slot.username, alloc.slot.id)
                 return alloc, url2
+            # (2) Authoritative: the provider may have rotated to a brand-new
+            # domain we don't know yet — ask GoldenOTT (throttled), register it,
+            # and rebuild through it.
+            if refresh_provider_domains_on_demand(db, alloc.slot.provider_id):
+                url3 = build_stream_url(alloc.slot, kind, xtream_id, ext, db=db)
+                if url3 not in (url, url2) and probe_stream_url(url3) == STREAM_OK:
+                    logger.info("play: donor=%s(id=%d) recovered via GoldenOTT domain refresh",
+                                alloc.slot.username, alloc.slot.id)
+                    return alloc, url3
 
         if verdict == STREAM_OK:
             return alloc, url

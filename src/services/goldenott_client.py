@@ -14,9 +14,13 @@ _MAX_429_RETRIES = 2
 
 
 class GoldenOTTClient:
-    def __init__(self, api_url: Optional[str] = None, api_key: Optional[str] = None):
+    def __init__(self, api_url: Optional[str] = None, api_key: Optional[str] = None,
+                 timeout: Optional[float] = None):
         self.api_url = (api_url or GOLDENOTT_API_URL).rstrip("/")
         self.api_key = api_key or GOLDENOTT_API_KEY
+        # Override the default (long) timeout for hot-path on-demand calls so a
+        # slow GoldenOTT never hangs a play request.
+        self.timeout = timeout if timeout is not None else _TIMEOUT
         self._session = requests.Session()
         self._session.headers.update({
             "X-API-Key": self.api_key,
@@ -28,7 +32,7 @@ class GoldenOTTClient:
         url = f"{self.api_url}{path}"
         for attempt in range(_MAX_429_RETRIES + 1):
             try:
-                resp = self._session.get(url, params=params, timeout=_TIMEOUT)
+                resp = self._session.get(url, params=params, timeout=self.timeout)
                 if resp.status_code == 429 and attempt < _MAX_429_RETRIES:
                     retry_after = float(resp.headers.get("Retry-After") or (2 ** attempt))
                     logger.info("GoldenOTT 429 on %s; sleeping %.1fs before retry", path, retry_after)
