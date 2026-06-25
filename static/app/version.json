@@ -1,0 +1,7 @@
+{
+  "versionCode": 1,
+  "versionName": "1.0",
+  "apkUrl": "https://ottapi.smartbunker.fr/static/app/symbioplayer-latest.apk",
+  "mandatory": false,
+  "notes": "Initial release."
+}
