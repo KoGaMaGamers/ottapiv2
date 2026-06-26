@@ -172,6 +172,46 @@ def play_live(
     return _play_response(alloc, url)
 
 
+class ResolveResponse(BaseModel):
+    stream_url: str
+
+
+@router.get("/resolve-live/{stream_id}", response_model=ResolveResponse)
+def resolve_live(
+    stream_id: int,
+    user: IPTVUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Resolve a live channel (by XTREAM stream_id) to a playable CDN URL using
+    the user's CURRENT donor allocation. For native in-player zapping: the device
+    often can't reach the panel to build URLs locally (ISP blocks panel domains),
+    so it asks us to resolve each channel it zaps to. Reuses the held donor;
+    rotates to a fresh validated slot only if that donor can't serve the channel.
+    """
+    now = datetime.utcnow()
+    ext = (user.preferred_output or "m3u8")
+
+    donor = (
+        db.query(IPTVUser)
+        .filter(IPTVUser.allocation_locked_by_user_id == user.id)
+        .filter(IPTVUser.allocation_in_use == True)  # noqa: E712
+        .filter(IPTVUser.allocation_lock_expires_at > now)
+        .first()
+    )
+    if donor is not None:
+        panel_url = build_stream_url(donor, "live", stream_id, ext, db=db)
+        verdict, resolved = resolve_stream_url(panel_url)
+        if verdict == STREAM_OK:
+            return ResolveResponse(stream_url=resolved)
+        logger.info("resolve_live: held donor=%s can't serve stream_id=%s (%s) — re-allocating",
+                    donor.username, stream_id, verdict)
+
+    # No live allocation, or the held donor can't serve this channel → full
+    # validated allocation (rotates to a working slot) on this stream_id.
+    _alloc, url = _allocate_validated(db, user, "live", stream_id, ext)
+    return ResolveResponse(stream_url=url)
+
+
 @router.post("/episode/{episode_id}", response_model=PlayResponse)
 def play_episode(
     episode_id: int,
