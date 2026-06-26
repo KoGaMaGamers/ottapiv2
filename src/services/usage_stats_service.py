@@ -117,7 +117,8 @@ def build_provider_pressure_snapshot(
         prov_slots = slots_by_provider.get(provider.id, [])
 
         total_accounts = len(prov_users)
-        eligible_accounts = 0
+        eligible_accounts = 0       # eligible to RECEIVE (is_eligible — includes enforced renters)
+        donor_eligible_accounts = 0 # eligible to DONATE (own provider sub still live → creds actually stream)
         expired_accounts = 0
         enforced_accounts = 0   # accounts with the flag set, regardless of expiry state
         locked_accounts = 0
@@ -127,6 +128,14 @@ def build_provider_pressure_snapshot(
         for u in prov_users:
             if is_eligible(u, ts):
                 eligible_accounts += 1
+            # A donor can only serve through its OWN provider creds, so the live
+            # donor pool is accounts whose provider subscription is still active
+            # — NOT is_eligible, which also counts enforced renters (app sub live
+            # but provider creds dead: they auth but the stream 4xx-rejects).
+            if (u.status not in ("Removed", "Banned")
+                    and u.provider_exp_date is not None
+                    and u.provider_exp_date > ts):
+                donor_eligible_accounts += 1
             if (u.provider_exp_date is not None) and (u.provider_exp_date <= ts):
                 expired_accounts += 1
             if bool(u.subscription_enforced):
@@ -162,12 +171,15 @@ def build_provider_pressure_snapshot(
                 # account side; they shouldn't reach here in practice
                 # because is_eligible blocks them at allocation time.
 
-        free_eligible_accounts = max(0, eligible_accounts - locked_accounts)
+        # Pressure is borne by the DONOR pool (accounts that can actually serve),
+        # so the denominators use donor_eligible_accounts, not the inflated
+        # receive-eligible count.
+        free_eligible_accounts = max(0, donor_eligible_accounts - locked_accounts)
         donor_pressure_pct = round(
-            (in_use_allocations / max(1, eligible_accounts)) * 100, 2,
+            (in_use_allocations / max(1, donor_eligible_accounts)) * 100, 2,
         )
         enforced_pressure_pct = round(
-            (enforced_renter_allocations / max(1, eligible_accounts)) * 100, 2,
+            (enforced_renter_allocations / max(1, donor_eligible_accounts)) * 100, 2,
         )
 
         snapshot.append({
@@ -175,6 +187,7 @@ def build_provider_pressure_snapshot(
             "provider_name":                  provider.name,
             "total_accounts":                 total_accounts,
             "eligible_accounts":              eligible_accounts,
+            "donor_eligible_accounts":        donor_eligible_accounts,
             "free_eligible_accounts":         free_eligible_accounts,
             "expired_accounts":               expired_accounts,
             "subscription_enforced_accounts": enforced_accounts,

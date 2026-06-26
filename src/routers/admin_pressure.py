@@ -271,9 +271,9 @@ _PAGE_HTML = """<!DOCTYPE html>
       const enforcedDanger = p.enforced_pressure_pct >= 50;
       cards.innerHTML = `
         <div class="card">
-          <div class="label">Eligible accounts</div>
-          <div class="value">${fmt(p.eligible_accounts)}</div>
-          <div class="sub">of ${fmt(p.total_accounts)} total · ${fmt(p.expired_accounts)} expired</div>
+          <div class="label">Eligible donors</div>
+          <div class="value">${fmt(p.donor_eligible_accounts)}</div>
+          <div class="sub">provider sub live · ${fmt(p.total_accounts)} total · ${fmt(p.expired_accounts)} expired</div>
         </div>
         <div class="card">
           <div class="label">Enforced accounts</div>
