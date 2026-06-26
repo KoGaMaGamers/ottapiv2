@@ -91,32 +91,9 @@ def _allocate_validated(
     for attempt in range(_MAX_DONOR_TRIES):
         alloc = _allocate_or_raise(db, owner)
         url = build_stream_url(alloc.slot, kind, xtream_id, ext, db=db)
-        verdict = probe_stream_url(url)
-
-        # Unreachable (DNS/TCP failure) is usually a provider domain rotation,
-        # not a dead account.
-        if verdict == STREAM_UNREACHABLE:
-            # (1) Cheap: re-probe this donor's domain; if it just died,
-            # build_stream_url routes through a healthy sibling we already know.
-            recheck_domain_now(db, alloc.slot.provider_id, url)
-            url2 = build_stream_url(alloc.slot, kind, xtream_id, ext, db=db)
-            if url2 != url and probe_stream_url(url2) == STREAM_OK:
-                logger.info("play: donor=%s(id=%d) recovered via known healthy domain",
-                            alloc.slot.username, alloc.slot.id)
-                return alloc, url2
-            # (2) Authoritative: the provider may have rotated to a brand-new
-            # domain we don't know yet — ask GoldenOTT (throttled), register it,
-            # and rebuild through it.
-            if refresh_provider_domains_on_demand(db, alloc.slot.provider_id):
-                url3 = build_stream_url(alloc.slot, kind, xtream_id, ext, db=db)
-                if url3 not in (url, url2) and probe_stream_url(url3) == STREAM_OK:
-                    logger.info("play: donor=%s(id=%d) recovered via GoldenOTT domain refresh",
-                                alloc.slot.username, alloc.slot.id)
-                    return alloc, url3
-
+        verdict, url = _probe_with_recovery(db, alloc.slot, kind, xtream_id, ext, url)
         if verdict == STREAM_OK:
             return alloc, url
-
         logger.info(
             "play: donor=%s(id=%d) failed stream pre-check (%s, attempt %d/%d) — rotating",
             alloc.slot.username, alloc.slot.id, verdict, attempt + 1, _MAX_DONOR_TRIES,
@@ -124,6 +101,57 @@ def _allocate_validated(
         report_bad_donor(db, alloc.slot, reason=f"stream pre-check {verdict}")
         do_release(db, owner, alloc.token)
     raise HTTPException(status_code=503, detail="no working stream slot; try again shortly")
+
+
+def _probe_with_recovery(db, slot, kind, xtream_id, ext, url):
+    """Probe a built donor stream URL and, on an UNREACHABLE verdict (provider
+    domain rotation), try to recover it through a healthy sibling domain or a
+    fresh GoldenOTT /domains fetch. Returns (verdict, url) — verdict is
+    STREAM_OK with the working (possibly rewritten) url, else the failing
+    verdict with the original url."""
+    verdict = probe_stream_url(url)
+    if verdict == STREAM_OK:
+        return STREAM_OK, url
+    if verdict == STREAM_UNREACHABLE:
+        # (1) Cheap: re-probe this donor's domain; if it just died,
+        # build_stream_url routes through a healthy sibling we already know.
+        recheck_domain_now(db, slot.provider_id, url)
+        url2 = build_stream_url(slot, kind, xtream_id, ext, db=db)
+        if url2 != url and probe_stream_url(url2) == STREAM_OK:
+            logger.info("play: donor=%s(id=%d) recovered via known healthy domain",
+                        slot.username, slot.id)
+            return STREAM_OK, url2
+        # (2) Authoritative: the provider may have rotated to a brand-new domain
+        # we don't know yet — ask GoldenOTT (throttled), register it, rebuild.
+        if refresh_provider_domains_on_demand(db, slot.provider_id):
+            url3 = build_stream_url(slot, kind, xtream_id, ext, db=db)
+            if url3 not in (url, url2) and probe_stream_url(url3) == STREAM_OK:
+                logger.info("play: donor=%s(id=%d) recovered via GoldenOTT domain refresh",
+                            slot.username, slot.id)
+                return STREAM_OK, url3
+    return verdict, url
+
+
+def _validated_preview_url(db, user, kind: str, ref: str, xtream_id, ext: str) -> str:
+    """Non-locking counterpart of _allocate_validated for the preview endpoints:
+    pick a donor (own creds for non-enforced users), stream-validate the URL, and
+    rotate past donors the panel rejects. Quarantine makes the next pick skip the
+    bad one. Raises 503 when no donor yields a working URL."""
+    for _ in range(_MAX_DONOR_TRIES):
+        owner = pick_url_owner(db, user)
+        if owner is None:
+            raise HTTPException(status_code=503, detail="no preview source available")
+        url = build_stream_url(owner, kind, xtream_id, ext, db=db)
+        # Own creds (non-enforced user) → trust without a probe.
+        if owner.id == user.id:
+            return url
+        verdict, url = _probe_with_recovery(db, owner, kind, xtream_id, ext, url)
+        if verdict == STREAM_OK:
+            logger.info("preview_%s: requester=%s(id=%d) -> donor=%s(id=%d) ref=%s",
+                        kind, user.username, user.id, owner.username, owner.id, ref)
+            return url
+        report_bad_donor(db, owner, reason=f"preview pre-check {verdict}")
+    raise HTTPException(status_code=503, detail="no working preview source")
 
 
 def _play_response(alloc: Allocation, url: str) -> PlayResponse:
@@ -290,7 +318,7 @@ def preview_movie(
     if movie is None or movie.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="movie not found")
     ext = movie.container_extension or "mp4"
-    url = build_stream_url(_preview_url_owner(db, user, "movie", str(movie_id)), "movie", movie.xtream_id, ext, db=db)
+    url = _validated_preview_url(db, user, "movie", str(movie_id), movie.xtream_id, ext)
     return PreviewResponse(url=url)
 
 
@@ -304,7 +332,7 @@ def preview_episode(
     if ep is None or ep.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="episode not found")
     ext = ep.container_extension or "mkv"
-    url = build_stream_url(_preview_url_owner(db, user, "episode", str(episode_id)), "series", ep.xtream_id, ext, db=db)
+    url = _validated_preview_url(db, user, "episode", str(episode_id), ep.xtream_id, ext)
     return PreviewResponse(url=url)
 
 
@@ -318,5 +346,5 @@ def preview_live(
     if live is None or live.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="live stream not found")
     ext = user.preferred_output or "m3u8"
-    url = build_stream_url(_preview_url_owner(db, user, "live", str(live_id)), "live", live.stream_id, ext, db=db)
+    url = _validated_preview_url(db, user, "live", str(live_id), live.stream_id, ext)
     return PreviewResponse(url=url)
