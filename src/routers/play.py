@@ -20,6 +20,7 @@ from ..services.donor_service import (
     pick_url_owner,
     probe_stream_url,
     release as do_release,
+    resolve_stream_url,
 )
 from ..services.dns_health_service import recheck_domain_now
 from ..services.goldenott_sync import refresh_provider_domains_on_demand
@@ -89,9 +90,11 @@ def _allocate_validated(
     for attempt in range(_MAX_DONOR_TRIES):
         alloc = _allocate_or_raise(db, owner)
         url = build_stream_url(alloc.slot, kind, xtream_id, ext, db=db)
-        verdict = probe_stream_url(url)
+        # Resolve the panel's 302 → CDN URL server-side and hand THAT to the
+        # client: ISPs commonly block the panel domain but not the CDN node.
+        verdict, resolved = resolve_stream_url(url)
         if verdict == STREAM_OK:
-            return alloc, url
+            return alloc, resolved
         logger.info(
             "play: slot=%s(id=%d) pre-check %s (attempt %d/%d) — release + rotate (no quarantine)",
             alloc.slot.username, alloc.slot.id, verdict, attempt + 1, _MAX_DONOR_TRIES,
@@ -116,11 +119,11 @@ def _validated_preview_url(db, user, kind: str, ref: str, xtream_id, ext: str) -
         # Own creds (non-enforced user) → trust without a probe.
         if owner.id == user.id:
             return url
-        verdict = probe_stream_url(url)
+        verdict, resolved = resolve_stream_url(url)   # panel 302 → CDN url for the device
         if verdict == STREAM_OK:
             logger.info("preview_%s: requester=%s(id=%d) -> slot=%s(id=%d) ref=%s",
                         kind, user.username, user.id, owner.username, owner.id, ref)
-            return url
+            return resolved
         tried.add(owner.id)   # rotate past it this request; never quarantine
     raise HTTPException(status_code=503, detail="no working preview source")
 

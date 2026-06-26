@@ -92,6 +92,46 @@ def check_stream_url(url: str) -> bool:
     return probe_stream_url(url) == STREAM_OK
 
 
+_REDIRECT_CODES = (301, 302, 303, 307, 308)
+
+
+def resolve_stream_url(url: str) -> tuple:
+    """Probe the panel URL AND resolve its redirect, returning (verdict, url).
+
+    Many ISPs block the provider's PANEL domains (the slot base_url) but NOT the
+    CDN node the panel 302-redirects to. The server can reach the panel, so it
+    follows that one hop here and returns the CDN URL — which the device streams
+    directly, bypassing the blocked panel. The CDN token stays valid for the live
+    session (verified: the manifest keeps advancing on the same CDN URL).
+
+    - panel 3xx → STREAM_OK, <CDN url from Location>
+    - panel 2xx (serves directly, no redirect) → STREAM_OK, <panel url>
+    - panel 4xx/5xx → STREAM_REJECT, url
+    - DNS/TCP failure → STREAM_UNREACHABLE, url
+    """
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": _STREAM_CHECK_UA, "Range": "bytes=0-0"},
+            timeout=DONOR_STREAM_CHECK_TIMEOUT_SEC,
+            allow_redirects=False,
+            stream=True,
+        )
+        try:
+            code = resp.status_code
+            if code in _REDIRECT_CODES:
+                loc = resp.headers.get("Location") or resp.headers.get("location")
+                return STREAM_OK, (loc.strip() if loc else url)
+            if code < 400:
+                return STREAM_OK, url   # served directly (no CDN redirect)
+            return STREAM_REJECT, url
+        finally:
+            resp.close()
+    except requests.exceptions.RequestException as exc:
+        logger.info("stream resolve unreachable: url=%s err=%s", url, exc)
+        return STREAM_UNREACHABLE, url
+
+
 @dataclass
 class Allocation:
     slot: IPTVUser
