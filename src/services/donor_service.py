@@ -242,6 +242,7 @@ def _needs_donor(user: IPTVUser, now: datetime) -> bool:
 
 def pick_url_owner(
     db: Session, requester: IPTVUser, now: Optional[datetime] = None,
+    exclude_ids: Optional[set] = None,
 ) -> Optional[IPTVUser]:
     """Return the IPTVUser whose creds should appear in a stream URL
     built for `requester`. Same as `requester` when their own upstream
@@ -250,10 +251,14 @@ def pick_url_owner(
     This is the *non-locking* counterpart of allocate_or_reuse — used by
     the preview endpoints, where we need a working URL but don't want
     to claim a slot. Called per-request from a cold path; no caching.
+
+    ``exclude_ids`` lets the caller rotate past slots it already tried this
+    request (the non-locking path can't release-to-rotate like the locking one).
     """
     now = now or datetime.utcnow()
     if not _needs_donor(requester, now):
         return requester
+    exclude_ids = exclude_ids or set()
 
     candidates = (
         db.query(IPTVUser)
@@ -268,6 +273,8 @@ def pick_url_owner(
         .all()
     )
     for cand in candidates:
+        if cand.id in exclude_ids:
+            continue
         if not is_eligible(cand, now):
             continue
         if not verify_donor(db, cand, now):

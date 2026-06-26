@@ -20,7 +20,6 @@ from ..services.donor_service import (
     pick_url_owner,
     probe_stream_url,
     release as do_release,
-    report_bad_donor,
 )
 from ..services.dns_health_service import recheck_domain_now
 from ..services.goldenott_sync import refresh_provider_domains_on_demand
@@ -70,23 +69,22 @@ def _allocate_or_raise(db: Session, owner: IPTVUser) -> Allocation:
     raise HTTPException(status_code=503, detail="no slot available; try again shortly")
 
 
-# How many donors to try before giving up. Each bad donor (stream URL the panel
-# rejects with 406/4xx — dead, expired, or at its connection limit) is
-# quarantined and we rotate to the next, so the client never sees the 406.
-_MAX_DONOR_TRIES = 4
+# How many slots to try before giving up. These are all legit accounts, so a
+# failed pre-check is treated as transient (network/path glitch) — we rotate to
+# the next slot but NEVER quarantine/disable a legit account.
+_MAX_DONOR_TRIES = 8
 
 
 def _allocate_validated(
     db: Session, owner: IPTVUser, kind: str, xtream_id, ext: str,
 ) -> tuple[Allocation, str]:
-    """Allocate a donor whose built stream URL actually responds, rotating past
-    donors the panel rejects. Returns (allocation, url).
+    """Allocate a slot whose built stream URL responds, rotating past slots that
+    don't (this request only). Returns (allocation, url).
 
-    Pre-validating server-side turns the old client-visible 406/ERR_NET_IO
-    (intermittent, retry-to-win) into a single request that already holds a
-    working URL — without consuming the donor's connection slot (see
-    check_stream_url). Self-heals: rejected donors are quarantined so later
-    plays skip them.
+    The pool is all legit, served-as-is accounts, so a bad pre-check verdict is
+    treated as transient — we simply release the slot (LRU then hands out a
+    DIFFERENT one) and try the next. We do NOT quarantine: disabling a legit
+    account for 30 min over a momentary network blip is never worth it.
     """
     for attempt in range(_MAX_DONOR_TRIES):
         alloc = _allocate_or_raise(db, owner)
@@ -94,26 +92,25 @@ def _allocate_validated(
         verdict = probe_stream_url(url)
         if verdict == STREAM_OK:
             return alloc, url
-        # Slot is served as-is on its own server; a bad verdict (dead account,
-        # or its server down/unreachable) just means rotate to a different slot
-        # on a different server — no domain rewriting.
         logger.info(
-            "play: donor=%s(id=%d) failed stream pre-check (%s, attempt %d/%d) — rotating",
+            "play: slot=%s(id=%d) pre-check %s (attempt %d/%d) — release + rotate (no quarantine)",
             alloc.slot.username, alloc.slot.id, verdict, attempt + 1, _MAX_DONOR_TRIES,
         )
-        report_bad_donor(db, alloc.slot, reason=f"stream pre-check {verdict}")
-        do_release(db, owner, alloc.token)
+        do_release(db, owner, alloc.token)   # release only → next LRU pick is a different slot
     raise HTTPException(status_code=503, detail="no working stream slot; try again shortly")
 
 
 def _validated_preview_url(db, user, kind: str, ref: str, xtream_id, ext: str) -> str:
     """Non-locking counterpart of _allocate_validated for the preview endpoints:
-    pick a donor (own creds for non-enforced users), stream-validate the URL, and
-    rotate past donors the panel rejects. Quarantine makes the next pick skip the
-    bad one. Raises 503 when no donor yields a working URL."""
+    pick a slot (own creds for non-enforced users), stream-validate the URL, and
+    rotate past slots that don't respond — WITHOUT quarantining (tried slots are
+    excluded for this request only). Raises 503 when none yields a working URL."""
+    tried: set = set()
     for _ in range(_MAX_DONOR_TRIES):
-        owner = pick_url_owner(db, user)
+        owner = pick_url_owner(db, user, exclude_ids=tried)
         if owner is None:
+            if tried:
+                break   # exhausted the pool this request
             raise HTTPException(status_code=503, detail="no preview source available")
         url = build_stream_url(owner, kind, xtream_id, ext, db=db)
         # Own creds (non-enforced user) → trust without a probe.
@@ -121,10 +118,10 @@ def _validated_preview_url(db, user, kind: str, ref: str, xtream_id, ext: str) -
             return url
         verdict = probe_stream_url(url)
         if verdict == STREAM_OK:
-            logger.info("preview_%s: requester=%s(id=%d) -> donor=%s(id=%d) ref=%s",
+            logger.info("preview_%s: requester=%s(id=%d) -> slot=%s(id=%d) ref=%s",
                         kind, user.username, user.id, owner.username, owner.id, ref)
             return url
-        report_bad_donor(db, owner, reason=f"preview pre-check {verdict}")
+        tried.add(owner.id)   # rotate past it this request; never quarantine
     raise HTTPException(status_code=503, detail="no working preview source")
 
 
@@ -221,12 +218,13 @@ def report_bad_donor_endpoint(
     user: IPTVUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Client tells us the donor URL it just played returned 401.
+    """Client reports the slot it just played didn't work on the device.
 
-    We quarantine that slot and release the allocation so the next /play
-    call lands on a different donor. Idempotent — a stale token after a
-    sweeper-driven release is treated as a no-op (200 with not_found=True
-    rather than 404, since the client wants to keep going)."""
+    We RELEASE the allocation (so the next /play LRU-picks a different slot) but
+    do NOT quarantine — these are all legit accounts and a device failure is
+    usually a transient network/path glitch, not a reason to disable the account.
+    Idempotent: a stale token is a no-op (200 not_found=True so the client keeps
+    going)."""
     slot = (
         db.query(IPTVUser)
         .filter(IPTVUser.allocation_locked_by_user_id == user.id)
@@ -235,23 +233,12 @@ def report_bad_donor_endpoint(
         .first()
     )
     if slot is None:
-        return {"quarantined": False, "released": False, "not_found": True}
+        return {"released": False, "not_found": True}
 
-    if slot.id == user.id:
-        # Client reported a 401 against the user's *own* slot. That's not
-        # a donor-pool problem to fix here — release the lock so the next
-        # /play forces the enforced-renter donor swap to re-evaluate.
-        do_release(db, user, body.allocation_token)
-        return {"quarantined": False, "released": True, "self": True}
-
-    reason = f"client {body.status_code or '401'}"
-    if body.detail:
-        reason = f"{reason}: {body.detail[:100]}"
-    report_bad_donor(db, slot, reason=reason)
     do_release(db, user, body.allocation_token)
-    logger.info("report_bad_donor: requester=%s(id=%d) slot=%s(id=%d) reason=%s",
-                user.username, user.id, slot.username, slot.id, reason)
-    return {"quarantined": True, "released": True, "slot_id": slot.id}
+    logger.info("report_bad_donor (release-only, no quarantine): requester=%s(id=%d) slot=%s(id=%d) status=%s",
+                user.username, user.id, slot.username, slot.id, body.status_code)
+    return {"released": True, "slot_id": slot.id}
 
 
 # ---------------------------------------------------------------------------
