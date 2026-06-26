@@ -498,19 +498,21 @@ def build_stream_url(
     slot: IPTVUser, kind: str, xtream_id: int, ext: str,
     db: Optional[Session] = None,
 ) -> str:
-    """Construct a playback URL using the chosen slot's creds.
+    """Construct a playback URL from the slot served EXACTLY as provisioned:
+    ``{subdomain.domain}/{kind}/{user}/{pass}/{id}.{ext}``.
 
     kind: "live" | "movie" | "series"
 
-    When *db* is provided the base URL is rewritten through
-    ``dns_health_service.rewrite_to_healthy`` so a slot whose stored
-    ``base_url`` points at dead infrastructure transparently swaps to a
-    live domain from the same provider.
+    We deliberately do NOT rewrite the slot's domain. Each donor account lives
+    on its OWN provider server (the pool spans many subdomains across many parent
+    domains), and the creds are tied to that server — swapping the domain to some
+    "authoritative"/healthy domain produces an invalid slot (wrong server for
+    those creds, and the brand/panel domain isn't even a streaming host).
+    Resilience comes from slot DIVERSITY + rotation: if one server is down, its
+    slots fail the pre-check and we rotate to a slot on a different server. The
+    `db` param is kept for signature compatibility but no longer used here.
     """
     base = (slot.base_url or "").rstrip("/")
-    if db is not None and slot.provider_id is not None:
-        from .dns_health_service import rewrite_to_healthy
-        base = rewrite_to_healthy(db, slot.provider_id, base)
     return f"{base}/{kind}/{slot.username}/{slot.password}/{xtream_id}.{ext}"
 
 

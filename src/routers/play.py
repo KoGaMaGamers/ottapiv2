@@ -91,9 +91,12 @@ def _allocate_validated(
     for attempt in range(_MAX_DONOR_TRIES):
         alloc = _allocate_or_raise(db, owner)
         url = build_stream_url(alloc.slot, kind, xtream_id, ext, db=db)
-        verdict, url = _probe_with_recovery(db, alloc.slot, kind, xtream_id, ext, url)
+        verdict = probe_stream_url(url)
         if verdict == STREAM_OK:
             return alloc, url
+        # Slot is served as-is on its own server; a bad verdict (dead account,
+        # or its server down/unreachable) just means rotate to a different slot
+        # on a different server — no domain rewriting.
         logger.info(
             "play: donor=%s(id=%d) failed stream pre-check (%s, attempt %d/%d) — rotating",
             alloc.slot.username, alloc.slot.id, verdict, attempt + 1, _MAX_DONOR_TRIES,
@@ -101,35 +104,6 @@ def _allocate_validated(
         report_bad_donor(db, alloc.slot, reason=f"stream pre-check {verdict}")
         do_release(db, owner, alloc.token)
     raise HTTPException(status_code=503, detail="no working stream slot; try again shortly")
-
-
-def _probe_with_recovery(db, slot, kind, xtream_id, ext, url):
-    """Probe a built donor stream URL and, on an UNREACHABLE verdict (provider
-    domain rotation), try to recover it through a healthy sibling domain or a
-    fresh GoldenOTT /domains fetch. Returns (verdict, url) — verdict is
-    STREAM_OK with the working (possibly rewritten) url, else the failing
-    verdict with the original url."""
-    verdict = probe_stream_url(url)
-    if verdict == STREAM_OK:
-        return STREAM_OK, url
-    if verdict == STREAM_UNREACHABLE:
-        # (1) Cheap: re-probe this donor's domain; if it just died,
-        # build_stream_url routes through a healthy sibling we already know.
-        recheck_domain_now(db, slot.provider_id, url)
-        url2 = build_stream_url(slot, kind, xtream_id, ext, db=db)
-        if url2 != url and probe_stream_url(url2) == STREAM_OK:
-            logger.info("play: donor=%s(id=%d) recovered via known healthy domain",
-                        slot.username, slot.id)
-            return STREAM_OK, url2
-        # (2) Authoritative: the provider may have rotated to a brand-new domain
-        # we don't know yet — ask GoldenOTT (throttled), register it, rebuild.
-        if refresh_provider_domains_on_demand(db, slot.provider_id):
-            url3 = build_stream_url(slot, kind, xtream_id, ext, db=db)
-            if url3 not in (url, url2) and probe_stream_url(url3) == STREAM_OK:
-                logger.info("play: donor=%s(id=%d) recovered via GoldenOTT domain refresh",
-                            slot.username, slot.id)
-                return STREAM_OK, url3
-    return verdict, url
 
 
 def _validated_preview_url(db, user, kind: str, ref: str, xtream_id, ext: str) -> str:
@@ -145,7 +119,7 @@ def _validated_preview_url(db, user, kind: str, ref: str, xtream_id, ext: str) -
         # Own creds (non-enforced user) → trust without a probe.
         if owner.id == user.id:
             return url
-        verdict, url = _probe_with_recovery(db, owner, kind, xtream_id, ext, url)
+        verdict = probe_stream_url(url)
         if verdict == STREAM_OK:
             logger.info("preview_%s: requester=%s(id=%d) -> donor=%s(id=%d) ref=%s",
                         kind, user.username, user.id, owner.username, owner.id, ref)
