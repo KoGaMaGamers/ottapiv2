@@ -59,15 +59,16 @@ def probe_stream_url(url: str) -> str:
     donor's connection slot. Returns one of STREAM_OK / STREAM_REJECT /
     STREAM_UNREACHABLE.
 
-    Good donors answer the first hop with a 2xx/3xx (typically a 302 redirect
-    to the CDN node); dead / expired / at-connection-limit accounts answer
-    406/403/401 straight from the panel (REJECT — the domain itself is up). A
-    DNS-resolution or TCP failure means the stored domain is gone, which most
-    often is a provider DNS rotation (UNREACHABLE — worth a domain re-check
-    before blaming the donor). We deliberately do NOT follow the redirect, so
-    the streaming node is never touched and no connection is claimed (verified:
-    repeated non-following probes don't burn the slot, a real fetch right after
-    still gets 206).
+    Checks only the panel's first hop (no redirect follow): good donors answer
+    2xx/3xx (typically a 302 to the CDN node); dead / expired / at-limit accounts
+    answer 406/403/401 from the panel (REJECT — domain is up); a DNS/TCP failure
+    means the domain is gone (UNREACHABLE — likely a rotation).
+
+    Deliberately does NOT follow the redirect to read stream bytes: the server's
+    network path to the CDN node is not the device's, so server-side deep probing
+    is both slow and an unreliable predictor of device playability. Detecting a
+    stream that connects-but-hangs is the client's job (it reports the bad donor
+    and we re-acquire).
     """
     try:
         resp = requests.get(
