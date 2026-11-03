@@ -11,6 +11,12 @@ from ..database import get_db
 from ..models import IPTVUser, XtreamProvider
 from ..services.auth_service import create_user_token, get_user_from_token
 from ..services.catalog_sync import trigger_provider_sync
+from ..services.dns_health_service import (
+    _extract_parent_domain,
+    get_healthy_domain,
+    is_domain_healthy,
+    rewrite_to_healthy,
+)
 from ..services.provider_service import match_or_create_provider, normalize_base_url
 from ..services.xtream_client import XtreamClient
 
@@ -121,14 +127,82 @@ def _build_new_user(
     )
 
 
+LOGIN_PROBE_TIMEOUT_SEC = 20
+FALLBACK_PROBE_TIMEOUT_SEC = 10
+MAX_FALLBACK_HOSTS = 3
+
+
+def _fallback_hosts(db: Session, user: IPTVUser, provider: XtreamProvider, dead_host: str) -> list[str]:
+    """Known-good hosts for a returning user's provider, best first.
+
+    Credentials are valid on every domain of a provider, so any host the DB
+    knows for it (and doesn't mark unhealthy) is a candidate.
+    """
+    raw = [provider.base_url or "", user.base_url or ""]
+    if user.base_url:
+        raw.append(rewrite_to_healthy(db, provider.id, user.base_url))
+    healthy = get_healthy_domain(db, provider.id)
+    if healthy:
+        raw.append(f"http://{healthy}")
+
+    dead_parent = _extract_parent_domain(dead_host)
+    hosts: list[str] = []
+    for h in raw:
+        h = normalize_base_url(h)
+        if not h or h == dead_host or h in hosts:
+            continue
+        parent = _extract_parent_domain(h)
+        if parent == dead_parent or (parent and not is_domain_healthy(db, provider.id, parent)):
+            continue
+        hosts.append(h)
+    return hosts[:MAX_FALLBACK_HOSTS]
+
+
+def _try_dead_host_fallback(db: Session, req: LoginRequest, dead_host: str):
+    """The sent host is unreachable (DNS/connect). For a returning user, retry
+    on another domain of their provider. Returns (client, info, host, provider)
+    or None. Never mutates the user row."""
+    user = db.query(IPTVUser).filter(IPTVUser.username == req.username).one_or_none()
+    if user is None or user.provider_id is None:
+        return None
+    provider = db.get(XtreamProvider, user.provider_id)
+    if provider is None:
+        return None
+    for host in _fallback_hosts(db, user, provider, dead_host):
+        client = XtreamClient(
+            base_url=host, username=req.username, password=req.password,
+            timeout=FALLBACK_PROBE_TIMEOUT_SEC,
+        )
+        info = client.get_account_info()
+        if info:
+            logger.warning(
+                "login: dead host rotated provider_id=%s user_id=%s %s -> %s",
+                provider.id, user.id, dead_host, host,
+            )
+            return client, info, host, provider
+    logger.warning(
+        "login: dead host and no working alternative provider_id=%s user_id=%s host=%s",
+        provider.id, user.id, dead_host,
+    )
+    return None
+
+
 @router.post("/login", response_model=LoginResponse)
 def login(req: LoginRequest, db: Session = Depends(get_db)):
     norm_host = normalize_base_url(req.base_url)
     if not norm_host:
         raise HTTPException(status_code=400, detail="invalid base_url")
 
-    client = XtreamClient(base_url=norm_host, username=req.username, password=req.password)
+    client = XtreamClient(
+        base_url=norm_host, username=req.username, password=req.password,
+        timeout=LOGIN_PROBE_TIMEOUT_SEC,
+    )
     info = client.get_account_info()
+    fallback_provider: Optional[XtreamProvider] = None
+    if not info and client.last_error == "network":
+        fallback = _try_dead_host_fallback(db, req, norm_host)
+        if fallback:
+            client, info, norm_host, fallback_provider = fallback
     if not info:
         raise HTTPException(status_code=502, detail="upstream provider unreachable")
 
@@ -136,10 +210,16 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     if int(user_info.get("auth") or 0) != 1:
         raise HTTPException(status_code=401, detail="invalid credentials")
 
-    try:
-        provider, _reason = match_or_create_provider(db, client, norm_host)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if fallback_provider is not None:
+        # Hand back the host we just verified, so the app persists a live domain.
+        provider = fallback_provider
+        response_base_url = norm_host
+    else:
+        try:
+            provider, _reason = match_or_create_provider(db, client, norm_host)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        response_base_url = None
     db.flush()
 
     existing = db.query(IPTVUser).filter(IPTVUser.username == req.username).one_or_none()
@@ -162,7 +242,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
             is_new_user=False,
             sync_triggered=False,
             username=existing.username,
-            base_url=provider.base_url,
+            base_url=response_base_url or provider.base_url,
             subscription_exp_date=existing.subscription_exp_date,
             max_connections=existing.max_connections,
             is_trial=existing.is_trial,

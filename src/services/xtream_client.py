@@ -10,6 +10,8 @@ client app, uses them for a one-time data sync, then discards them.
 
 import logging
 import requests
+
+from ..log_redact import redact
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,10 @@ class XtreamClient:
         self.username = username
         self.password = password
         self.timeout = timeout
+        # Kind of the last failure: "network" (DNS/connect/timeout), "http",
+        # "json", or None after a success. Lets login tell a dead host apart
+        # from a provider that answered badly.
+        self.last_error: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -56,16 +62,23 @@ class XtreamClient:
             params.update(extra_params)
         url = self._api_url()
         _headers = {"User-Agent": "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1"}
+        self.last_error = None
         try:
             response = requests.get(url, params=params, timeout=self.timeout, headers=_headers)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.HTTPError as exc:
-            logger.error("Xtream API HTTP error %s – %s", url, exc)
+            self.last_error = "http"
+            logger.error("Xtream API HTTP error %s – %s", url, redact(str(exc)))
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            self.last_error = "network"
+            logger.error("Xtream API request error %s – %s", url, redact(str(exc)))
         except requests.exceptions.RequestException as exc:
-            logger.error("Xtream API request error %s – %s", url, exc)
+            self.last_error = "http"
+            logger.error("Xtream API request error %s – %s", url, redact(str(exc)))
         except ValueError as exc:
-            logger.error("Xtream API JSON decode error %s – %s", url, exc)
+            self.last_error = "json"
+            logger.error("Xtream API JSON decode error %s – %s", url, redact(str(exc)))
         return None
 
     # ------------------------------------------------------------------

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from . import log_redact
 from .config import SPORT_EVENTS_STATIC_DIR
 from .routers import (
     admin_landing,
@@ -37,6 +38,7 @@ logging.basicConfig(
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+log_redact.install()
 
 
 @asynccontextmanager

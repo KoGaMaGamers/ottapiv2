@@ -29,6 +29,7 @@ from sqlalchemy import func, or_, update
 from sqlalchemy.orm import Session
 
 from ..config import ALLOCATION_TTL_SEC
+from ..log_redact import redact
 from ..database import SessionLocal
 from ..models import IPTVUser
 
@@ -83,7 +84,7 @@ def probe_stream_url(url: str) -> str:
         finally:
             resp.close()
     except requests.exceptions.RequestException as exc:
-        logger.info("stream probe unreachable: url=%s err=%s", url, exc)
+        logger.info("stream probe unreachable: url=%s err=%s", redact(url), redact(str(exc)))
         return STREAM_UNREACHABLE
 
 
@@ -128,7 +129,7 @@ def resolve_stream_url(url: str) -> tuple:
         finally:
             resp.close()
     except requests.exceptions.RequestException as exc:
-        logger.info("stream resolve unreachable: url=%s err=%s", url, exc)
+        logger.info("stream resolve unreachable: url=%s err=%s", redact(url), redact(str(exc)))
         return STREAM_UNREACHABLE, url
 
 
@@ -200,7 +201,7 @@ def _probe_donor_creds(slot: IPTVUser) -> Optional[bool]:
             headers={"User-Agent": "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1"},
         )
     except requests.exceptions.RequestException as exc:
-        logger.info("donor probe network error: slot=%s err=%s", slot.username, exc)
+        logger.info("donor probe network error: slot=%s err=%s", slot.username, redact(str(exc)))
         return None
     if r.status_code in (401, 403):
         return False
