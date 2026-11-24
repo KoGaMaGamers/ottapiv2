@@ -69,6 +69,10 @@ class TMDBClient:
         self._cache: Dict[str, Optional[Dict[str, Any]]] = {}
         self._consecutive_failures = 0
         self._circuit_open = False
+        # True when the last get() returned None for a reason that says
+        # nothing about the title (network, 429, 5xx, bad JSON, circuit open)
+        # — callers must not count those as "TMDB has no match".
+        self.last_failure_transient = False
 
     # ------------------------------------------------------------------
     # Internals
@@ -102,8 +106,14 @@ class TMDBClient:
                 _CIRCUIT_BREAKER_FAILS,
             )
 
+    @property
+    def circuit_open(self) -> bool:
+        return self._circuit_open
+
     def get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        self.last_failure_transient = False
         if self._circuit_open:
+            self.last_failure_transient = True
             return None
 
         cache_key = self._cache_key(endpoint, params)
@@ -123,6 +133,7 @@ class TMDBClient:
                 resp = self._session.get(url, params=request_params, timeout=15)
             except requests.RequestException as exc:
                 logger.warning("TMDB GET %s network error: %s", endpoint, exc)
+                self.last_failure_transient = True
                 self._record_failure()
                 with self._cache_lock:
                     self._cache[cache_key] = None
@@ -131,6 +142,7 @@ class TMDBClient:
             if resp.status_code == 429:
                 if attempt >= _MAX_RETRIES_429:
                     logger.warning("TMDB GET %s exhausted 429 retries", endpoint)
+                    self.last_failure_transient = True
                     self._record_failure()
                     with self._cache_lock:
                         self._cache[cache_key] = None
@@ -146,7 +158,11 @@ class TMDBClient:
                 continue
 
             if not resp.ok:
-                logger.warning("TMDB GET %s HTTP %s: %s", endpoint, resp.status_code, resp.text[:200])
+                if resp.status_code == 404:
+                    logger.debug("TMDB GET %s HTTP 404", endpoint)
+                else:
+                    logger.warning("TMDB GET %s HTTP %s: %s", endpoint, resp.status_code, resp.text[:200])
+                    self.last_failure_transient = True
                 # 404 means the requested resource doesn't exist on TMDB (stale id,
                 # private/deleted entry) — not a sign that TMDB is unhealthy. Don't
                 # count it toward the circuit breaker; just cache the None and move on.
@@ -160,6 +176,7 @@ class TMDBClient:
                 body = resp.json()
             except ValueError:
                 logger.warning("TMDB GET %s: invalid JSON", endpoint)
+                self.last_failure_transient = True
                 self._record_failure()
                 with self._cache_lock:
                     self._cache[cache_key] = None

@@ -19,10 +19,10 @@ import logging
 import re
 import threading
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from sqlalchemy import insert, select
+from sqlalchemy import and_, insert, or_, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
@@ -35,6 +35,7 @@ from ..models import (
     movie_stream_genre_association,
     series_stream_genre_association,
 )
+from .adult import adult_movie_category_ids, adult_serie_category_ids, apply_adult_filter
 from .tmdb_client import TMDBClient, TMDBNotConfigured
 
 logger = logging.getLogger(__name__)
@@ -207,10 +208,16 @@ def _enrich_one_movie(
 ) -> bool:
     if movie.tmdb_id:
         payload = client.get_movie_details(movie.tmdb_id)
-        if not payload:
+        if payload:
+            _apply_movie_payload(movie, payload, genre_id_index, db)
+            return True
+        if client.last_failure_transient:
             return False
-        _apply_movie_payload(movie, payload, genre_id_index, db)
-        return True
+        # 404: the stored id (from the provider / legacy import) doesn't
+        # exist on TMDB. Drop it and fall back to a name search.
+        logger.info("TMDB movie id=%s for stream %s is stale; searching by name",
+                    movie.tmdb_id, movie.id)
+        movie.tmdb_id = None
 
     name = _clean_search_name(movie.name)
     if not name:
@@ -275,10 +282,14 @@ def _enrich_one_series(
 ) -> bool:
     if series.tmdb_id:
         payload = client.get_tv_details(series.tmdb_id)
-        if not payload:
+        if payload:
+            _apply_series_payload(series, payload, genre_id_index, db)
+            return True
+        if client.last_failure_transient:
             return False
-        _apply_series_payload(series, payload, genre_id_index, db)
-        return True
+        logger.info("TMDB tv id=%s for series %s is stale; searching by name",
+                    series.tmdb_id, series.id)
+        series.tmdb_id = None
 
     name = _clean_search_name(series.name)
     if not name:
@@ -305,6 +316,59 @@ def _enrich_one_series(
 # Top-level entry
 # ---------------------------------------------------------------------------
 
+# Retry schedule for titles TMDB couldn't match: after the Nth miss, wait
+# _RETRY_AFTER[N] before trying again (last value repeats).
+_RETRY_AFTER = [timedelta(days=1), timedelta(days=7), timedelta(days=30), timedelta(days=90)]
+
+
+def _due_for_attempt(model, now: datetime):
+    """SQL filter: never tried, or the backoff for its miss count elapsed."""
+    conds = [model.tmdb_attempts == 0, model.tmdb_last_attempt_at.is_(None)]
+    for n, wait in enumerate(_RETRY_AFTER, start=1):
+        cmp = model.tmdb_attempts == n if n < len(_RETRY_AFTER) else model.tmdb_attempts >= n
+        conds.append(and_(cmp, model.tmdb_last_attempt_at < now - wait))
+    return or_(*conds)
+
+
+def _enrich_batch(db, client, model, ids, enrich, genre_id_index, kind, summary) -> None:
+    """Enrich rows one by one. Each row runs in a SAVEPOINT so a failure
+    rolls back only that row (previously one exception discarded up to 99
+    already-enriched rows). Commits every 100 rows; rows are fetched in
+    chunks so the session never holds the whole table."""
+    done = failed = 0
+    for chunk_start in range(0, len(ids), 200):
+        chunk = ids[chunk_start:chunk_start + 200]
+        rows = db.query(model).filter(model.id.in_(chunk)).order_by(model.id).all()
+        for row in rows:
+            if client.circuit_open:
+                return
+            try:
+                with db.begin_nested():
+                    ok = enrich(db, client, row, genre_id_index)
+                    now = datetime.utcnow()
+                    if ok:
+                        row.tmdb_synced_at = now
+                        row.tmdb_attempts = 0
+                    elif not client.last_failure_transient:
+                        # genuine miss -> back off (transient errors don't count)
+                        row.tmdb_attempts = int(row.tmdb_attempts or 0) + 1
+                        row.tmdb_last_attempt_at = now
+            except Exception as exc:
+                logger.warning("TMDB %s %s failed: %s", kind, row.id, exc)
+                ok = False
+            if ok:
+                done += 1
+                summary[f"{kind}_enriched"] += 1
+            else:
+                failed += 1
+                summary[f"{kind}_failed"] += 1
+        db.commit()
+        db.expunge_all()
+        if chunk_start and chunk_start % 2000 == 0:
+            logger.info("TMDB %s: %d/%d  enriched=%d failed=%d",
+                        kind, chunk_start, len(ids), done, failed)
+
+
 def run_tmdb_enrichment(provider_id: int) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "provider_id": provider_id,
@@ -313,6 +377,7 @@ def run_tmdb_enrichment(provider_id: int) -> Dict[str, Any]:
         "series_enriched": 0,
         "series_failed": 0,
         "skipped_no_tmdb_token": False,
+        "circuit_open": False,
         "errors": [],
     }
     try:
@@ -333,78 +398,29 @@ def run_tmdb_enrichment(provider_id: int) -> Dict[str, Any]:
         db.commit()
         genre_id_index = _ensure_genre_id_index(db)
 
-        movies = (
-            db.query(MovieStream)
-            .filter(MovieStream.provider_id == provider_id)
-            .filter(MovieStream.tmdb_synced_at.is_(None))
-            .order_by(MovieStream.id)
-            .all()
-        )
-        logger.info("TMDB: %d movies to enrich for provider id=%s", len(movies), provider_id)
-        pending = 0
-        for idx, m in enumerate(movies):
-            if idx > 0 and idx % 500 == 0:
-                logger.info(
-                    "TMDB movies: %d/%d  enriched=%d failed=%d",
-                    idx, len(movies),
-                    summary["movies_enriched"], summary["movies_failed"],
-                )
-            try:
-                ok = _enrich_one_movie(db, client, m, genre_id_index)
-            except Exception as exc:
-                logger.warning("TMDB movie %s failed: %s", m.id, exc)
-                summary["movies_failed"] += 1
-                db.rollback()
-                continue
-            if ok:
-                summary["movies_enriched"] += 1
-                m.tmdb_synced_at = datetime.utcnow()
-                pending += 1
-                if pending >= 100:
-                    db.commit()
-                    pending = 0
-            else:
-                # Don't set the watermark on miss — leave NULL so a future run
-                # can retry once data improves (e.g., upstream populates a tmdb_id,
-                # name parsing improves, TMDB adds the title).
-                summary["movies_failed"] += 1
-        if pending:
-            db.commit()
+        adult_movies = adult_movie_category_ids(db, provider_id)
+        adult_series = adult_serie_category_ids(db, provider_id)
+        now = datetime.utcnow()
 
-        seriess = (
-            db.query(SeriesStream)
-            .filter(SeriesStream.provider_id == provider_id)
-            .filter(SeriesStream.tmdb_synced_at.is_(None))
-            .order_by(SeriesStream.id)
-            .all()
-        )
-        logger.info("TMDB: %d series to enrich for provider id=%s", len(seriess), provider_id)
-        pending = 0
-        for idx, s in enumerate(seriess):
-            if idx > 0 and idx % 500 == 0:
-                logger.info(
-                    "TMDB series: %d/%d  enriched=%d failed=%d",
-                    idx, len(seriess),
-                    summary["series_enriched"], summary["series_failed"],
-                )
-            try:
-                ok = _enrich_one_series(db, client, s, genre_id_index)
-            except Exception as exc:
-                logger.warning("TMDB series %s failed: %s", s.id, exc)
-                summary["series_failed"] += 1
-                db.rollback()
-                continue
-            if ok:
-                summary["series_enriched"] += 1
-                s.tmdb_synced_at = datetime.utcnow()
-                pending += 1
-                if pending >= 100:
-                    db.commit()
-                    pending = 0
-            else:
-                summary["series_failed"] += 1
-        if pending:
-            db.commit()
+        for kind, model, cat_col, adult_ids, enrich in (
+            ("movies", MovieStream, MovieStream.movie_category_id, adult_movies, _enrich_one_movie),
+            ("series", SeriesStream, SeriesStream.series_category_id, adult_series, _enrich_one_series),
+        ):
+            ids = [
+                r.id for r in apply_adult_filter(
+                    db.query(model.id)
+                    .filter(model.provider_id == provider_id)
+                    .filter(model.tmdb_synced_at.is_(None))
+                    .filter(_due_for_attempt(model, now)),
+                    cat_col, adult_ids, False,
+                ).order_by(model.id)
+            ]
+            logger.info("TMDB: %d %s due for enrichment for provider id=%s",
+                        len(ids), kind, provider_id)
+            _enrich_batch(db, client, model, ids, enrich, genre_id_index, kind, summary)
+            if client.circuit_open:
+                summary["circuit_open"] = True
+                break
 
     except Exception as exc:
         logger.exception("TMDB enrichment failed for provider id=%s", provider_id)

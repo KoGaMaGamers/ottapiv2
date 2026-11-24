@@ -329,6 +329,9 @@ class MovieStream(Base):
     o_language = Column(String(10), nullable=True)
     tmdb_vote_average = Column(Float, nullable=True)
     tmdb_popularity = Column(Float, nullable=True)
+    # Enrichment backoff for titles TMDB can't match (see tmdb_enrichment).
+    tmdb_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    tmdb_last_attempt_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -386,6 +389,9 @@ class SeriesStream(Base):
     o_language = Column(String(10), nullable=True)
     tmdb_vote_average = Column(Float, nullable=True)
     tmdb_popularity = Column(Float, nullable=True)
+    # Enrichment backoff for titles TMDB can't match (see tmdb_enrichment).
+    tmdb_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    tmdb_last_attempt_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
