@@ -1,6 +1,22 @@
 import threading
 
+import pytest
+
 from src.services.job_locks import exclusive, is_running
+
+
+def _db_available() -> bool:
+    try:
+        from sqlalchemy import text
+        from src.database import engine
+        with engine.connect() as c:
+            c.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(not _db_available(), reason="needs MySQL (named locks)")
 
 
 def test_second_run_is_skipped_while_first_runs():

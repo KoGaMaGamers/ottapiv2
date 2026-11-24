@@ -33,7 +33,24 @@ npm run tauri:android:build  # Production APK/AAB
 ```
 
 ### Production backend
-Deployed via systemd — see `deploy/ottapi-v2.service`. Runs uvicorn on port 8011.
+Two systemd units (copies in `deploy/`):
+- `ottapi-v2.service` — API: uvicorn, 2 workers, port 8011, `RUN_SCHEDULER=false`.
+- `ottapi-v2-worker.service` — `python -m src.worker`: all APScheduler jobs (GoldenOTT sync at :05 every 6h, catalog sync daily 03:30 UTC → movie details → TMDB, sweeps, pressure samples). Writes a heartbeat to `kv_settings.scheduler_heartbeat`.
+
+Background jobs take per-provider MySQL named locks (`src/services/job_locks.py`) and record every run in `sync_runs` (`src/services/sync_runs.py`).
+
+```bash
+scripts/migrate.sh --status        # schema migrations (migrations/*.sql, ops-* never auto-run)
+scripts/migrate.sh                 # apply pending
+.venv/bin/python -m pytest -q tests/
+curl localhost:8011/health         # 503 if DB down or scheduler heartbeat stale
+curl localhost:8011/health/sync    # 503 if a provider's catalog >36h old or last run failed
+```
+
+Code is root-owned and read-only for www-data. Deps are pinned in `requirements.lock`. Nightly DB backup: `ottapi-db-backup.timer` → `/var/backups/ottapi/`.
+
+### Catalog soft-delete
+Rows the provider stops listing get `removed_at` and are hidden from **every** ORM query by a loader-criteria hook at the bottom of `src/models.py`. Code that must see them (the catalog sync) uses `.execution_options(include_removed=True)`.
 
 ## Architecture
 
