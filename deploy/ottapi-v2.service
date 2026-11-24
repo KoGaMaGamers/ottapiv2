@@ -1,7 +1,7 @@
 [Unit]
-Description=OTTAPI v2 - IPTV catalog backend
+Description=OTTAPI v2 - IPTV catalog backend (API)
 After=network.target mysql.service
-Wants=mysql.service
+Wants=mysql.service ottapi-v2-worker.service
 
 [Service]
 Type=simple
@@ -9,9 +9,24 @@ User=www-data
 Group=www-data
 WorkingDirectory=/home/ottapi
 Environment="PATH=/home/ottapi/.venv/bin:/usr/bin:/usr/local/bin"
-ExecStart=/home/ottapi/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8011 --workers 1
+# Scheduled jobs run in ottapi-v2-worker.service, not in the API workers.
+Environment="RUN_SCHEDULER=false"
+Environment="PREVIEW_CLIP_MAX_CONCURRENT=1"
+ExecStart=/home/ottapi/.venv/bin/uvicorn src.main:app --host 127.0.0.1 --port 8011 --workers 2
 Restart=always
-RestartSec=10
+RestartSec=5
+
+# Backstop against runaway memory (one worker reached 17 GB in Nov 2026).
+MemoryHigh=3G
+MemoryMax=4G
+
+# Hardening. Not NoNewPrivileges: the admin endpoint uses sudo to start
+# ottapi-sport-events.service (see deploy/sudoers.d-ottapi-sport-events).
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
 
 StandardOutput=journal
 StandardError=journal

@@ -100,6 +100,43 @@ def _run_pressure_prune() -> None:
         db.close()
 
 
+HEARTBEAT_KEY = "scheduler_heartbeat"
+
+
+def _write_heartbeat() -> None:
+    """The scheduler runs in its own worker process; /health in the API
+    reads this to know the worker is alive."""
+    from ..models import KvSettings
+    db = SessionLocal()
+    try:
+        row = db.get(KvSettings, HEARTBEAT_KEY)
+        now = datetime.utcnow().isoformat(timespec="seconds")
+        if row is None:
+            db.add(KvSettings(key=HEARTBEAT_KEY, value=now))
+        else:
+            row.value = now
+        db.commit()
+    except Exception:
+        logger.exception("scheduler heartbeat write failed")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def scheduler_heartbeat_age_sec() -> float | None:
+    from ..models import KvSettings
+    db = SessionLocal()
+    try:
+        row = db.get(KvSettings, HEARTBEAT_KEY)
+        if row is None:
+            return None
+        return (datetime.utcnow() - datetime.fromisoformat(row.value)).total_seconds()
+    except Exception:
+        return None
+    finally:
+        db.close()
+
+
 def scheduler_running() -> bool:
     return _scheduler is not None and bool(_scheduler.running)
 
@@ -134,30 +171,33 @@ def start_scheduler() -> None:
     _scheduler = BackgroundScheduler(timezone="UTC")
     _clear_stale_sync_flags()
 
+    # Fixed wall-clock times (not intervals): interval jobs re-anchor on
+    # every restart, so frequent deploys kept postponing them.
     _scheduler.add_job(
         run_goldenott_sync,
-        trigger="interval",
-        hours=GOLDENOTT_SYNC_INTERVAL_HOURS,
+        trigger="cron",
+        hour=f"*/{GOLDENOTT_SYNC_INTERVAL_HOURS}",
+        minute=5,
         id="goldenott_sync",
         name="GoldenOTT users + brand domain sync",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
+        misfire_grace_time=3600,
     )
     _scheduler.add_job(
         _run_all_provider_catalog_syncs,
-        trigger="interval",
-        hours=CATALOG_SYNC_INTERVAL_HOURS,
-        # Offset by 30 min: both interval jobs anchor on scheduler start, so
-        # without this the daily catalog sync starts in the same second as
-        # the 6-hourly GoldenOTT sync and they contend for the same rows.
-        next_run_time=datetime.now(timezone.utc)
-        + timedelta(hours=CATALOG_SYNC_INTERVAL_HOURS, minutes=30),
+        # daily 03:30 UTC: off the GoldenOTT :05 slots, before prime time.
+        # (CATALOG_SYNC_INTERVAL_HOURS kept for the log line only.)
+        trigger="cron",
+        hour=3,
+        minute=30,
         id="catalog_sync_all",
         name="Per-provider catalog sync (all populated providers)",
         replace_existing=True,
         coalesce=True,
         max_instances=1,
+        misfire_grace_time=3600,
     )
     _scheduler.add_job(
         sweep_expired_locks,
@@ -213,11 +253,22 @@ def start_scheduler() -> None:
     # in this uvicorn process — uvicorn runs as www-data and can't
     # read the Max-plan OAuth file.
 
+    _scheduler.add_job(
+        _write_heartbeat,
+        trigger="interval",
+        seconds=60,
+        id="scheduler_heartbeat",
+        name="Scheduler liveness heartbeat (read by /health)",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc),
+    )
     from .memwatch import install_scheduler_hooks
     install_scheduler_hooks(_scheduler)
     _scheduler.start()
     logger.info(
-        "Scheduler started: goldenott_sync every %dh, catalog_sync_all every %dh, "
+        "Scheduler started: goldenott_sync cron */%dh at :05, catalog_sync_all daily 03:30 UTC (cfg %dh), "
         "allocation_sweeper every %ds, pressure_sample every 60s, "
         "dns_health_check every 5m, pressure_prune daily at 04:15 UTC",
         GOLDENOTT_SYNC_INTERVAL_HOURS, CATALOG_SYNC_INTERVAL_HOURS,

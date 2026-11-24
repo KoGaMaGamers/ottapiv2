@@ -36,7 +36,8 @@ from sqlalchemy import text
 
 from .database import SessionLocal, engine
 from .models import SyncRun, XtreamProvider
-from .services.scheduler import scheduler_running
+from .config import RUN_SCHEDULER
+from .services.scheduler import scheduler_heartbeat_age_sec, scheduler_running
 from .services.auth_service import assert_secret_configured
 
 logging.basicConfig(
@@ -57,11 +58,13 @@ log_redact.install()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     assert_secret_configured()   # refuse to run with forgeable tokens
-    start_scheduler()
+    if RUN_SCHEDULER:
+        start_scheduler()
     memwatch.start_sampler()
     yield
     memwatch.stop_sampler()
-    stop_scheduler()
+    if RUN_SCHEDULER:
+        stop_scheduler()
 
 
 # No public /docs, /redoc, /openapi.json: they mapped every admin endpoint.
@@ -129,8 +132,13 @@ def health():
             conn.execute(text("SELECT 1"))
     except Exception as exc:
         problems.append(f"db: {type(exc).__name__}")
-    if not scheduler_running():
-        problems.append("scheduler not running")
+    if RUN_SCHEDULER:
+        if not scheduler_running():
+            problems.append("scheduler not running")
+    else:
+        age = scheduler_heartbeat_age_sec()
+        if age is None or age > 180:
+            problems.append("scheduler worker heartbeat stale")
     if problems:
         return JSONResponse(status_code=503, content={"status": "unhealthy", "problems": problems})
     return {"status": "healthy"}

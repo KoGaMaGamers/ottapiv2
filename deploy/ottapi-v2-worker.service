@@ -1,0 +1,32 @@
+[Unit]
+Description=OTTAPI v2 - background jobs (scheduler: catalog/TMDB/GoldenOTT sync, sweeps)
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/home/ottapi
+Environment="PATH=/home/ottapi/.venv/bin:/usr/bin:/usr/local/bin"
+ExecStart=/home/ottapi/.venv/bin/python -m src.worker
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+MemoryHigh=3G
+MemoryMax=4G
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ottapi-v2-worker
+
+[Install]
+WantedBy=multi-user.target
