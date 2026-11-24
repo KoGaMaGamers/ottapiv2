@@ -25,3 +25,17 @@ def test_stream_paths_plain_and_encoded():
     assert "USR" not in redact("http://cdn.x/live/USR/PWD/123.m3u8")
     out = redact("url=http%3A%2F%2Fcdn.x%2Fmovie%2FUSR%2FPWD%2F99.mkv")
     assert "USR" not in out and "PWD" not in out and "99.mkv" in out
+
+
+def test_filter_keeps_access_log_args_shape():
+    import logging
+    from src.log_redact import RedactingFilter
+    rec = logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("1.2.3.4:0", "GET", "/api/v1/user/stream-proxy?url=x&token=SECRET", "1.1", 200),
+        None,
+    )
+    RedactingFilter().filter(rec)
+    assert isinstance(rec.args, tuple) and len(rec.args) == 5
+    assert "SECRET" not in rec.getMessage() and "1.2.3.4:0" in rec.getMessage()

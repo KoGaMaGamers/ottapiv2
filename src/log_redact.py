@@ -36,14 +36,16 @@ def redact(text: str) -> str:
 
 class RedactingFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            msg = record.getMessage()
-        except Exception:
-            return True
-        clean = redact(msg)
-        if clean != msg:
-            record.msg = clean
-            record.args = None
+        # Redact msg and each string arg in place, keeping record.args'
+        # shape: formatters such as uvicorn's AccessFormatter unpack args
+        # positionally and crash if args is collapsed to None.
+        if isinstance(record.msg, str):
+            record.msg = redact(record.msg)
+        args = record.args
+        if isinstance(args, tuple):
+            record.args = tuple(redact(a) if isinstance(a, str) else a for a in args)
+        elif isinstance(args, dict):
+            record.args = {k: redact(v) if isinstance(v, str) else v for k, v in args.items()}
         if record.exc_info and not record.exc_text:
             # Pre-render the traceback so the redacted text is what gets cached.
             record.exc_text = redact(logging.Formatter().formatException(record.exc_info))

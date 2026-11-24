@@ -34,6 +34,7 @@ import random
 import re
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -48,6 +49,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import IPTVUser
 from ..services.auth_service import get_user_from_token
+from ..services.net_guard import assert_public_url, is_public_url
 
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,9 @@ _PREVIEW_CLIP_ALLOW_DEBUG_START = (
     os.getenv("PREVIEW_CLIP_ALLOW_DEBUG_START", "false").strip().lower() == "true"
 )
 _FFMPEG_TIMEOUT_SEC = 95
+_PREVIEW_CLIP_SLOTS = threading.Semaphore(
+    int(os.getenv("PREVIEW_CLIP_MAX_CONCURRENT", "2"))
+)
 
 
 class PreviewClipResponse(BaseModel):
@@ -157,6 +162,29 @@ def _looks_like_m3u8(url: str, content_type: str) -> bool:
     return path.endswith(".m3u8") or path.endswith(".m3u")
 
 
+
+_MAX_REDIRECTS = 5
+
+
+def _send_following_public_redirects(
+    client: httpx.Client, method: str, url: str, headers: dict,
+) -> httpx.Response:
+    """client.send(stream=True) that follows redirects itself so every hop
+    is checked against the SSRF guard (httpx's follow_redirects would not)."""
+    for _ in range(_MAX_REDIRECTS + 1):
+        resp = client.send(client.build_request(method, url, headers=headers), stream=True)
+        if not resp.is_redirect:
+            return resp
+        location = resp.headers.get("location")
+        resp.close()
+        if not location:
+            return resp
+        url = urljoin(str(resp.url), location)
+        if not is_public_url(url):
+            raise HTTPException(status_code=403, detail="redirect destination not allowed")
+    raise HTTPException(status_code=502, detail="too many upstream redirects")
+
+
 # ── Endpoint ────────────────────────────────────────────────────────────────
 
 @router.api_route("/stream-proxy", methods=["GET", "HEAD"])
@@ -169,9 +197,7 @@ def stream_proxy(
 ):
     _resolve_user(authorization, token, db)   # 401s on bad auth
 
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise HTTPException(status_code=422, detail="invalid proxy url")
+    assert_public_url(url)   # SSRF guard: no loopback / LAN / metadata targets
 
     # ALWAYS present a browser User-Agent to the provider CDN. The VOD CDN
     # (cloudvix/vexovrix…) resets connections from non-browser UAs (curl etc.),
@@ -203,11 +229,10 @@ def stream_proxy(
     upstream = None
     last_exc: Optional[Exception] = None
     for attempt in range(_MAX_TRIES):
-        client = httpx.Client(follow_redirects=True, timeout=timeout)
+        client = httpx.Client(follow_redirects=False, timeout=timeout)
         try:
-            upstream = client.send(
-                client.build_request(method, url, headers=fwd_headers),
-                stream=True,
+            upstream = _send_following_public_redirects(
+                client, method, url, fwd_headers,
             )
             break
         except httpx.RequestError as exc:
@@ -361,7 +386,8 @@ def _generate_preview_clip(
         output_path.unlink(missing_ok=True)
 
     cmd = [
-        ffmpeg_bin, "-y",
+        ffmpeg_bin, "-y", "-nostdin",
+        "-protocol_whitelist", "http,https,tcp,tls,crypto,hls",
         "-ss", str(start_at_sec),
         "-i", source_url,
         "-t", str(duration_sec),
@@ -424,9 +450,7 @@ def get_preview_clip(
     del type   # reserved for future per-type cache tuning
     user = _resolve_user(authorization, token, db)
 
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise HTTPException(status_code=422, detail="invalid preview source url")
+    assert_public_url(url)   # SSRF guard (ffmpeg would fetch it server-side)
 
     selected_start = _pick_preview_start_at(start_at_sec)
     duration = _PREVIEW_CLIP_DURATION_SEC
@@ -440,10 +464,18 @@ def get_preview_clip(
     )
 
     if not cached:
-        _generate_preview_clip(
-            source_url=url, output_path=clip_path,
-            start_at_sec=selected_start, duration_sec=duration,
-        )
+        # Each encode is up to ~95s of libx264 CPU; cap concurrency so a
+        # burst can't pin the box. Busy -> 503, the client just skips the teaser.
+        if not _PREVIEW_CLIP_SLOTS.acquire(blocking=False):
+            raise HTTPException(status_code=503, detail="preview busy, try later")
+        try:
+            if not _clip_not_expired(clip_path):   # another request may have made it
+                _generate_preview_clip(
+                    source_url=url, output_path=clip_path,
+                    start_at_sec=selected_start, duration_sec=duration,
+                )
+        finally:
+            _PREVIEW_CLIP_SLOTS.release()
         _cleanup_preview_clip_cache()
 
     effective_token = token or (

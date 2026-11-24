@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Subtitle
+from ..services.ratelimit import SlidingWindowLimiter
 from ..services.subdl_client import (
     LANG_LABELS,
     best_per_language,
@@ -41,6 +42,9 @@ from ..services.subdl_client import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/subtitles", tags=["subtitles"])
+
+_SUBDL_PER_IP = SlidingWindowLimiter(limit=20, window_sec=600)    # per client, 10 min
+_SUBDL_GLOBAL = SlidingWindowLimiter(limit=120, window_sec=3600)  # all clients, 1 h
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +231,15 @@ def get_subtitles(
         return _build_response(list(cached.values()), base_url)
 
     fetch_langs = missing if missing else None
+    # Cache miss -> paid SUBDL call. The endpoint is unauthenticated (the
+    # legacy native player fetches it without a token), so cap upstream
+    # calls per client IP and globally to protect the SUBDL quota.
+    client_ip = request.client.host if request.client else "?"
+    if not (_SUBDL_PER_IP.allow(client_ip) and _SUBDL_GLOBAL.allow("*")):
+        logger.warning("subtitles: SUBDL rate limit hit ip=%s tmdb_id=%d", client_ip, tmdb_id)
+        if cached:
+            return _build_response(list(cached.values()), base_url)
+        raise HTTPException(status_code=429, detail="subtitle lookups rate-limited")
     try:
         raw_subs = search_subtitles(tmdb_id, fetch_langs, season=season, episode=episode)
     except RuntimeError as exc:

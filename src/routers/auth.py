@@ -7,10 +7,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from ..config import ALLOW_NEW_PROVIDERS
 from ..database import get_db
 from ..models import IPTVUser, XtreamProvider
 from ..services.auth_service import create_user_token, get_user_from_token
 from ..services.catalog_sync import trigger_provider_sync
+from ..services.net_guard import is_public_url
 from ..services.dns_health_service import (
     _extract_parent_domain,
     get_healthy_domain,
@@ -192,6 +194,8 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     norm_host = normalize_base_url(req.base_url)
     if not norm_host:
         raise HTTPException(status_code=400, detail="invalid base_url")
+    if not is_public_url(norm_host):
+        raise HTTPException(status_code=400, detail="invalid base_url")
 
     client = XtreamClient(
         base_url=norm_host, username=req.username, password=req.password,
@@ -219,6 +223,14 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
             provider, _reason = match_or_create_provider(db, client, norm_host)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if _reason == "created" and not ALLOW_NEW_PROVIDERS:
+            # Unknown panel: don't let any Xtream-shaped server mint accounts
+            # and start an in-process catalog sync. Set ALLOW_NEW_PROVIDERS=true
+            # in .env while onboarding a new provider.
+            db.rollback()
+            logger.warning("login: refused new provider host=%s user=%s",
+                           norm_host, req.username)
+            raise HTTPException(status_code=403, detail="provider not supported")
         response_base_url = None
     db.flush()
 

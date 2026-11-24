@@ -75,3 +75,6 @@ SPORT_EVENTS_MODEL = _get("SPORT_EVENTS_MODEL", "claude-opus-4-8")
 CLAUDE_SUBPROCESS_TIMEOUT_SEC = _get_int("CLAUDE_SUBPROCESS_TIMEOUT_SEC", 1800)
 ANTHROPIC_API_KEY = _get("ANTHROPIC_API_KEY", "")
 SPORT_EVENTS_STATIC_DIR = _get("SPORT_EVENTS_STATIC_DIR", "/home/ottapi/static/sport-events")
+
+# Login may create a provider row for an unknown Xtream panel only when true.
+ALLOW_NEW_PROVIDERS = _get("ALLOW_NEW_PROVIDERS", "false").strip().lower() == "true"
