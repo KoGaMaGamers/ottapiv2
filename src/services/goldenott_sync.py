@@ -266,6 +266,13 @@ def sync_lines(
     upstream_usernames: set[str] = set()
     detail_failures = 0
 
+    # Phase A — network only. Fetch every line detail BEFORE touching the
+    # DB: get_line() is slow (rate-limited, 429 retries), and doing it
+    # between writes held row locks on iptv_users / provider_dns_entries /
+    # xtream_providers for the whole run, which made concurrent writers
+    # (catalog sync, pressure samples, DNS checks, heartbeats) hit
+    # "Lock wait timeout exceeded".
+    fetched: list[tuple[int, str, Optional[str], dict]] = []
     for line_summary in upstream_lines:
         raw_line_id = line_summary.get("id")
         username = line_summary.get("username")
@@ -281,7 +288,10 @@ def sync_lines(
             summary.errors.append(f"line {line_id} ({username}): detail fetch failed")
             detail_failures += 1
             continue
+        fetched.append((line_id, username, upstream_status, detail))
 
+    # Phase B — DB only, short transaction (committed by run_sync).
+    for line_id, username, upstream_status, detail in fetched:
         existing = (
             db.query(IPTVUser)
             .filter(IPTVUser.reseller_line_id == line_id)
@@ -353,6 +363,9 @@ def run_sync(provider_id: Optional[int] = None) -> dict:
     db: Session = SessionLocal()
     try:
         sync_brand_domain(db, client, pid, summary)
+        # Commit now: sync_lines spends minutes on network calls, and an open
+        # write on the provider row blocks every FK insert referencing it.
+        db.commit()
         sync_lines(db, client, pid, summary)
         db.commit()
     except Exception as exc:

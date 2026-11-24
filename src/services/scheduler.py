@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -119,6 +120,11 @@ def start_scheduler() -> None:
         _run_all_provider_catalog_syncs,
         trigger="interval",
         hours=CATALOG_SYNC_INTERVAL_HOURS,
+        # Offset by 30 min: both interval jobs anchor on scheduler start, so
+        # without this the daily catalog sync starts in the same second as
+        # the 6-hourly GoldenOTT sync and they contend for the same rows.
+        next_run_time=datetime.now(timezone.utc)
+        + timedelta(hours=CATALOG_SYNC_INTERVAL_HOURS, minutes=30),
         id="catalog_sync_all",
         name="Per-provider catalog sync (all populated providers)",
         replace_existing=True,
@@ -179,6 +185,8 @@ def start_scheduler() -> None:
     # in this uvicorn process — uvicorn runs as www-data and can't
     # read the Max-plan OAuth file.
 
+    from .memwatch import install_scheduler_hooks
+    install_scheduler_hooks(_scheduler)
     _scheduler.start()
     logger.info(
         "Scheduler started: goldenott_sync every %dh, catalog_sync_all every %dh, "

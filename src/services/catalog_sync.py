@@ -1163,6 +1163,14 @@ def run_catalog_sync(provider_id: int) -> dict:
         logger.exception("Catalog sync failed for provider id=%s", provider_id)
         summary.errors.append(f"unhandled: {exc}")
         db.rollback()
+        # Don't leave the admin page showing "sync in progress" forever.
+        try:
+            p = db.get(XtreamProvider, provider_id)
+            if p is not None and p.sync_started_at is not None:
+                p.sync_started_at = None
+                db.commit()
+        except Exception:
+            db.rollback()
     finally:
         db.close()
 
