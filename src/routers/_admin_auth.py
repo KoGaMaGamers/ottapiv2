@@ -20,9 +20,10 @@ import base64
 import hmac
 from typing import Optional
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 
 from ..config import ADMIN_PASSWORD, ADMIN_SECRET, ADMIN_USERNAME
+from ..services.ratelimit import SlidingWindowLimiter
 
 
 _BASIC_REALM = 'Basic realm="ottapi-admin"'
@@ -52,10 +53,20 @@ def _basic_ok(authorization: str) -> bool:
     return False
 
 
+# Failed admin auth attempts per client IP (brute force on ADMIN_PASSWORD):
+# after 10 failures in 15 min the IP gets 429 until the window clears.
+_FAILED = SlidingWindowLimiter(limit=10, window_sec=900)
+
+
 def require_admin(
+    request: Request = None,
     x_admin_secret: Optional[str] = Header(default=None, alias="X-Admin-Secret"),
     authorization: Optional[str] = Header(default=None),
 ) -> None:
+    ip = request.client.host if request is not None and request.client else None
+    if ip and _FAILED.recent(ip) >= _FAILED.limit:
+        raise HTTPException(status_code=429, detail="Too many failed attempts")
+
     if not (ADMIN_SECRET or ADMIN_PASSWORD):
         raise HTTPException(
             status_code=503,
@@ -67,6 +78,9 @@ def require_admin(
 
     if authorization and _basic_ok(authorization):
         return
+
+    if ip and (x_admin_secret or authorization):
+        _FAILED.allow(ip)   # record the failed attempt
 
     raise HTTPException(
         status_code=401,

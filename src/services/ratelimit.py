@@ -36,6 +36,13 @@ class SlidingWindowLimiter:
             q.append(now)
             return True
 
+    def recent(self, key: str) -> int:
+        """Hits for ``key`` inside the window, without recording one."""
+        cutoff = time.monotonic() - self.window
+        with self._lock:
+            q = self._hits.get(key)
+            return sum(1 for t in q if t > cutoff) if q else 0
+
     def _evict_idle(self, cutoff: float) -> None:
         for k in [k for k, q in self._hits.items() if not q or q[-1] <= cutoff]:
             del self._hits[k]

@@ -55,7 +55,11 @@ async def lifespan(app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title="OTTAPI", version="0.1.0", lifespan=lifespan)
+# No public /docs, /redoc, /openapi.json: they mapped every admin endpoint.
+app = FastAPI(
+    title="OTTAPI", version="0.1.0", lifespan=lifespan,
+    docs_url=None, redoc_url=None, openapi_url=None,
+)
 if memwatch.ENABLED:
     app.add_middleware(memwatch.MemWatchMiddleware)
 

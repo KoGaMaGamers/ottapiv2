@@ -9,14 +9,15 @@ from ..services.goldenott_sync import run_sync
 
 logger = logging.getLogger(__name__)
 
+from ._admin_auth import require_admin  # noqa: E402
+
 router = APIRouter(prefix="/admin/sync", tags=["admin-sync"])
 
 
 def _require_admin(x_admin_secret: Optional[str]) -> None:
-    if not ADMIN_SECRET:
-        raise HTTPException(status_code=503, detail="ADMIN_SECRET not configured")
-    if not x_admin_secret or not hmac.compare_digest(x_admin_secret, ADMIN_SECRET):
-        raise HTTPException(status_code=401, detail="invalid admin secret")
+    """Delegates to the shared admin check (one implementation for all
+    admin routers; header-secret path, same semantics as before)."""
+    require_admin(x_admin_secret=x_admin_secret, authorization=None)
 
 
 @router.post("/goldenott")
