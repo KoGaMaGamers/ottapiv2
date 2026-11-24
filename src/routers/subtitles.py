@@ -231,6 +231,7 @@ def get_subtitles(
         return _build_response(list(cached.values()), base_url)
 
     fetch_langs = missing if missing else None
+    db.close()   # release the connection during SUBDL calls; reopens for the insert
     # Cache miss -> paid SUBDL call. The endpoint is unauthenticated (the
     # legacy native player fetches it without a token), so cap upstream
     # calls per client IP and globally to protect the SUBDL quota.

@@ -79,6 +79,8 @@ _GENRE_OVERLAP_POINTS = 1
 # Extra genre candidates beyond limit+exclusions (seed titles can appear
 # under several rows and are skipped during scoring).
 _CANDIDATE_PAD = 100
+# Duplicates per title across categories eat candidates before dedupe.
+_DUP_FACTOR = 15
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +232,21 @@ def _score_candidates(
 
 
 
+def _dedupe_by_tmdb(scored: list, take: int) -> list:
+    """Providers list the same title in many categories (one film appeared
+    12x in a single Home row). Keep the first row per tmdb_id."""
+    out, seen = [], set()
+    for _score, _pop, row in scored:
+        key = row.tmdb_id or ("row", row.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+        if len(out) >= take:
+            break
+    return out
+
+
 def _candidate_rows(
     db: Session, model, assoc_fk_col, category_col, provider_id: int,
     category_ids: Optional[List[int]], adult_ids: set[int],
@@ -257,7 +274,9 @@ def _candidate_rows(
         )
         for r in (
             base.filter(model.id.in_(genre_match))
-            .order_by(func.coalesce(model.tmdb_popularity, 0).desc(), model.id)
+            # bare column (NULLs sort last on DESC) so the (provider_id,
+            # tmdb_popularity) index can serve the order + LIMIT
+            .order_by(model.tmdb_popularity.desc(), model.id.desc())   # same direction -> backward index scan
             .limit(cap)
             .options(selectinload(model.genres))
             .all()
@@ -285,6 +304,8 @@ def get_recommendations(
         raise HTTPException(status_code=400, detail="limit must be >= 1")
     limit = min(limit, _MAX_LIMIT)
 
+    provider_id = user.provider_id
+    db.close()   # up to 16 TMDB calls follow; don't hold a pool connection
     movie_hits, series_hits = _collect_tmdb_similar(seeds)
 
     # Pool the seed signal — genres + already-seen tmdb_ids — once,
@@ -312,8 +333,8 @@ def get_recommendations(
     # outright (no recommendations of that type).
     # Recommendations are a regular-content surface: never recommend adult
     # titles, even if the client somehow passes an adult category id.
-    adult_movie_ids = adult_movie_category_ids(db, user.provider_id)
-    adult_serie_ids = adult_serie_category_ids(db, user.provider_id)
+    adult_movie_ids = adult_movie_category_ids(db, provider_id)
+    adult_serie_ids = adult_serie_category_ids(db, provider_id)
 
     # Mix movies + series at the configured limit. The Home row is
     # mixed-type, so split roughly 60/40 movies/series — most providers
@@ -331,15 +352,15 @@ def get_recommendations(
     #     popularity (N padded for exclusions) yields the same result.
     movie_rows = _candidate_rows(
         db, MovieStream, movie_stream_genre_association.c.movie_stream_id,
-        MovieStream.movie_category_id, user.provider_id,
+        MovieStream.movie_category_id, provider_id,
         body.movie_category_ids, adult_movie_ids, movie_hits, seed_genres,
-        cap=movie_take + len(body.exclude_movie_ids) + _CANDIDATE_PAD,
+        cap=movie_take * _DUP_FACTOR + len(body.exclude_movie_ids) + _CANDIDATE_PAD,
     )
     series_rows = _candidate_rows(
         db, SeriesStream, series_stream_genre_association.c.series_stream_id,
-        SeriesStream.series_category_id, user.provider_id,
+        SeriesStream.series_category_id, provider_id,
         body.series_category_ids, adult_serie_ids, series_hits, seed_genres,
-        cap=series_take + len(body.exclude_series_ids) + _CANDIDATE_PAD,
+        cap=series_take * _DUP_FACTOR + len(body.exclude_series_ids) + _CANDIDATE_PAD,
     )
 
     movie_scored = _score_candidates(
@@ -362,6 +383,6 @@ def get_recommendations(
     series_scored.sort(key=lambda t: (-t[0], -(t[1] or 0)))
 
 
-    movies = [_movie_to_list_item(t[2]) for t in movie_scored[:movie_take]]
-    series = [_series_to_list_item(t[2]) for t in series_scored[:series_take]]
+    movies = [_movie_to_list_item(r) for r in _dedupe_by_tmdb(movie_scored, movie_take)]
+    series = [_series_to_list_item(r) for r in _dedupe_by_tmdb(series_scored, series_take)]
     return RecommendationsResponse(movies=movies, series=series)

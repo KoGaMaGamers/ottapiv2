@@ -533,6 +533,7 @@ _EPG_CACHE_TTL_SEC = 300  # 5 minutes — short enough that "now playing"
                           # stays accurate-ish but long enough to absorb
                           # rapid focus changes
 _EPG_CACHE_MAX_ENTRIES = 4096
+_EPG_UPSTREAM_TIMEOUT_SEC = 5
 
 # Keyed by (user_id, stream_id, limit). User-scoped because provider
 # responses depend on per-account state (expired accounts return
@@ -590,7 +591,9 @@ def get_live_epg(
     if live is None or live.provider_id != user.provider_id:
         raise HTTPException(status_code=404, detail="live stream not found")
 
-    cache_key = (user.id, live.stream_id, limit)
+    # Shared per provider: listings don't depend on the account (expired
+    # accounts get no listings, and empty results are never cached).
+    cache_key = (user.provider_id, live.stream_id, limit)
     cached = _epg_cache_get(cache_key)
     if cached is not None:
         return {"epg_listings": cached, "cached": True}
@@ -606,8 +609,14 @@ def get_live_epg(
     if cred_owner.id != user.id:
         logger.info("epg: requester=%s(id=%d) -> donor=%s(id=%d) live=%d",
                     user.username, user.id, cred_owner.username, cred_owner.id, live.stream_id)
-    client = XtreamClient(cred_owner.base_url, cred_owner.username, cred_owner.password)
-    payload = client.get_short_epg(stream_id=live.stream_id, limit=limit)
+    # 5s, not the 60s default: EPG is cosmetic and each call blocks a worker
+    # thread. Release the DB connection before the network call (it was held
+    # for the whole upstream request).
+    client = XtreamClient(cred_owner.base_url, cred_owner.username, cred_owner.password,
+                          timeout=_EPG_UPSTREAM_TIMEOUT_SEC)
+    stream_id = live.stream_id
+    db.close()
+    payload = client.get_short_epg(stream_id=stream_id, limit=limit)
     listings: List[Dict[str, Any]] = []
     if isinstance(payload, dict):
         raw = payload.get("epg_listings")

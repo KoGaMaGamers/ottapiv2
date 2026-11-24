@@ -29,6 +29,10 @@ from sqlalchemy import func, or_, update
 from sqlalchemy.orm import Session
 
 from ..config import ALLOCATION_TTL_SEC
+
+# LRU donor scan bound per allocation (was unbounded; each candidate may
+# cost a verify probe).
+_MAX_DONOR_CANDIDATES = 25
 from ..log_redact import redact
 from ..database import SessionLocal
 from ..models import IPTVUser
@@ -310,7 +314,9 @@ def pick_url_owner(
             IPTVUser.donor_unhealthy_until.is_(None),
             IPTVUser.donor_unhealthy_until <= now,
         ))
+        .filter(IPTVUser.id.notin_(exclude_ids) if exclude_ids else True)
         .order_by(IPTVUser.allocation_last_released_at.asc())
+        .limit(_MAX_DONOR_CANDIDATES)
         .all()
     )
     for cand in candidates:
@@ -419,6 +425,7 @@ def allocate_or_reuse(db: Session, owner: IPTVUser) -> Optional[Allocation]:
             IPTVUser.donor_unhealthy_until <= now,
         ))
         .order_by(IPTVUser.allocation_last_released_at.asc())
+        .limit(_MAX_DONOR_CANDIDATES)
         .all()
     )
     for slot in candidates:
@@ -460,7 +467,22 @@ def heartbeat(
         .first()
     )
     if slot is None:
-        return None
+        # Stale token: resolve-live may have rotated this owner to a new
+        # slot during in-player zapping, and shipped clients don't learn the
+        # new token. Keep the lock the owner actually holds alive instead of
+        # letting it expire under a playing stream. (release() stays strict:
+        # a late release of the old token must not free the new lock.)
+        held = (
+            db.query(IPTVUser)
+            .filter(IPTVUser.allocation_locked_by_user_id == owner.id)
+            .filter(IPTVUser.allocation_in_use == True)  # noqa: E712
+            .filter(IPTVUser.allocation_lock_expires_at > now)
+            .all()
+        )
+        if len(held) != 1:
+            return None
+        slot = held[0]
+        allocation_token = slot.allocation_lock_token
 
     slot.last_heartbeat_at = now
     slot.is_streaming = bool(is_streaming)

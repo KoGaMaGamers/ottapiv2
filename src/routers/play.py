@@ -1,12 +1,12 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ..config import HEARTBEAT_CADENCE_SEC
+from ..config import ALLOCATION_TTL_SEC, HEARTBEAT_CADENCE_SEC
 from ..database import get_db
 from ..models import IPTVUser, LiveStream, MovieStream, SeriesEpisode
 from ..services.donor_service import (
@@ -174,6 +174,12 @@ def play_live(
 
 class ResolveResponse(BaseModel):
     stream_url: str
+    # The allocation now backing this stream. Changes when the held donor
+    # couldn't serve the channel and a new slot was claimed; clients should
+    # heartbeat/release with it (older clients ignore these fields — the
+    # heartbeat endpoint falls back to the owner's current lock for them).
+    allocation_token: Optional[str] = None
+    expires_at: Optional[datetime] = None
 
 
 @router.get("/resolve-live/{stream_id}", response_model=ResolveResponse)
@@ -202,14 +208,21 @@ def resolve_live(
         panel_url = build_stream_url(donor, "live", stream_id, ext, db=db)
         verdict, resolved = resolve_stream_url(panel_url)
         if verdict == STREAM_OK:
-            return ResolveResponse(stream_url=resolved)
+            # Zapping is activity: keep the held lock alive.
+            donor.allocation_lock_expires_at = datetime.utcnow() + timedelta(seconds=ALLOCATION_TTL_SEC)
+            token, expires = donor.allocation_lock_token, donor.allocation_lock_expires_at
+            db.commit()
+            return ResolveResponse(stream_url=resolved, allocation_token=token, expires_at=expires)
         logger.info("resolve_live: held donor=%s can't serve stream_id=%s (%s) — re-allocating",
                     donor.username, stream_id, verdict)
+        # Release it first: otherwise allocate_or_reuse hands the SAME lock
+        # back and we re-probe the failing donor before rotating.
+        do_release(db, user, donor.allocation_lock_token)
 
     # No live allocation, or the held donor can't serve this channel → full
     # validated allocation (rotates to a working slot) on this stream_id.
-    _alloc, url = _allocate_validated(db, user, "live", stream_id, ext)
-    return ResolveResponse(stream_url=url)
+    alloc, url = _allocate_validated(db, user, "live", stream_id, ext)
+    return ResolveResponse(stream_url=url, allocation_token=alloc.token, expires_at=alloc.expires_at)
 
 
 @router.post("/episode/{episode_id}", response_model=PlayResponse)

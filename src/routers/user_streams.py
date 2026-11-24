@@ -196,6 +196,7 @@ def stream_proxy(
     db: Session = Depends(get_db),
 ):
     _resolve_user(authorization, token, db)   # 401s on bad auth
+    db.close()   # don't hold a pool connection for the whole stream
 
     assert_public_url(url)   # SSRF guard: no loopback / LAN / metadata targets
 
@@ -449,6 +450,7 @@ def get_preview_clip(
 ):
     del type   # reserved for future per-type cache tuning
     user = _resolve_user(authorization, token, db)
+    db.close()   # ffmpeg can run ~95s; release the DB connection first
 
     assert_public_url(url)   # SSRF guard (ffmpeg would fetch it server-side)
 
@@ -501,6 +503,7 @@ def get_preview_clip_file(
     db: Session = Depends(get_db),
 ):
     user = _resolve_user(authorization, token, db)
+    db.close()   # FileResponse streams the file; no DB needed
     if not clip_id.isalnum():
         raise HTTPException(status_code=400, detail="invalid clip id")
     clip_path = _preview_clip_path(user.id, clip_id)

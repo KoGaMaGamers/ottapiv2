@@ -112,9 +112,14 @@ def _clear_stale_sync_flags() -> None:
         n = (db.query(XtreamProvider)
              .filter(XtreamProvider.sync_started_at.isnot(None))
              .update({XtreamProvider.sync_started_at: None}, synchronize_session=False))
+        # runs that were in flight when the previous process stopped
+        from ..models import SyncRun
+        m = (db.query(SyncRun).filter(SyncRun.status == "running")
+             .update({SyncRun.status: "failed", SyncRun.error: "interrupted (process restart)"},
+                     synchronize_session=False))
         db.commit()
-        if n:
-            logger.info("cleared stale sync_started_at on %d provider(s)", n)
+        if n or m:
+            logger.info("cleared stale sync_started_at on %d provider(s), %d interrupted run(s)", n, m)
     except Exception:
         logger.exception("could not clear stale sync flags")
         db.rollback()

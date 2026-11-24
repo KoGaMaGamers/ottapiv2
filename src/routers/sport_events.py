@@ -14,7 +14,9 @@ frontend's hero-fallback path depends on that.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Iterable, List, Optional
+import threading
+import time
+from typing import Iterable, List, NamedTuple, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -100,7 +102,7 @@ def _normalize(raw: Optional[str]) -> str:
     return s
 
 
-def _sort_variants(streams: Iterable[LiveStream]) -> list[LiveStream]:
+def _sort_variants(streams: Iterable["_Chan"]) -> list["_Chan"]:
     """Order quality variants so the 'main' channel comes first.
     Shortest normalized name wins (proxy for the base channel over
     +1 / regional / promo variants), then alphabetical for stability."""
@@ -110,10 +112,51 @@ def _sort_variants(streams: Iterable[LiveStream]) -> list[LiveStream]:
     )
 
 
+class _Chan(NamedTuple):
+    id: int
+    stream_id: int
+    name: str
+    stream_icon: Optional[str]
+
+
+_CHANNEL_INDEX_TTL = 600          # s; catalog changes daily at most
+_channel_index: dict[int, tuple[float, list[tuple[_Chan, str, frozenset]]]] = {}
+_RESPONSE_TTL = 120               # s; the batch changes every ~72h
+_response_cache: dict[tuple[int, int, int], tuple[float, "SportEventsResponse"]] = {}
+_cache_lock = threading.Lock()
+
+
+def _provider_channels(db: Session, provider_id: int) -> list[tuple[_Chan, str, frozenset]]:
+    """(channel, normalized name, token set) for every non-adult channel of
+    the provider. Cached: rebuilding meant loading ~31k ORM rows + regex
+    normalization on every request."""
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _channel_index.get(provider_id)
+        if hit and now - hit[0] < _CHANNEL_INDEX_TTL:
+            return hit[1]
+    from ..services.adult import adult_live_category_ids
+    adult_ids = adult_live_category_ids(db, provider_id)
+    q = db.query(LiveStream.id, LiveStream.stream_id, LiveStream.name, LiveStream.stream_icon
+                 ).filter(LiveStream.provider_id == provider_id)
+    if adult_ids:
+        q = q.filter(
+            LiveStream.live_category_id.notin_(adult_ids)
+            | LiveStream.live_category_id.is_(None)
+        )
+    index = []
+    for r in q.all():
+        n = _normalize(r.name)
+        index.append((_Chan(r.id, r.stream_id, r.name or "", r.stream_icon), n, frozenset(n.split())))
+    with _cache_lock:
+        _channel_index[provider_id] = (now, index)
+    return index
+
+
 def _resolve_all_for_provider(
     db: Session, provider_id: int, broadcaster: str,
-    channel_cache: dict[int, list[tuple[LiveStream, str, frozenset]]],
-) -> list[LiveStream]:
+    channel_cache: dict[int, list[tuple[_Chan, str, frozenset]]],
+) -> list[_Chan]:
     """Return EVERY LiveStream that matches `broadcaster` under
     `provider_id`. Same layered match as ingest.py, but where the
     write-path resolver picked one channel, the read-path collects
@@ -124,30 +167,12 @@ def _resolve_all_for_provider(
         return []
 
     if provider_id not in channel_cache:
-        # Exclude adult channels — a sport broadcaster should never resolve to
-        # an adult-category stream (defense-in-depth; keeps the Adult catalog
-        # off the regular sport-events rail).
-        from ..services.adult import adult_live_category_ids
-        adult_ids = adult_live_category_ids(db, provider_id)
-        q = db.query(LiveStream).filter(LiveStream.provider_id == provider_id)
-        if adult_ids:
-            q = q.filter(
-                LiveStream.live_category_id.notin_(adult_ids)
-                | LiveStream.live_category_id.is_(None)
-            )
-        # Normalize each channel name ONCE per request. Re-normalizing
-        # ~30k names for every broadcaster (25+ per batch) cost ~900k
-        # regex passes and pinned the worker CPU.
-        cached = []
-        for r in q.all():
-            n = _normalize(r.name)
-            cached.append((r, n, frozenset(n.split())))
-        channel_cache[provider_id] = cached
+        channel_cache[provider_id] = _provider_channels(db, provider_id)
     rows = channel_cache[provider_id]
     if not rows:
         return []
 
-    matches: dict[int, LiveStream] = {}
+    matches: dict[int, _Chan] = {}
 
     # Layer 2 — exact normalized match. Since _normalize strips
     # HD/FHD/HEVC/SD/region tokens, every quality variant of the same
@@ -198,6 +223,20 @@ def list_sport_events(
     user: IPTVUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    cache_key = (user.provider_id, limit, int(time.time() // _RESPONSE_TTL))
+    with _cache_lock:
+        hit = _response_cache.get(cache_key)
+    if hit:
+        return hit[1]
+    resp = _build_sport_events(db, user.provider_id, limit)
+    with _cache_lock:
+        if len(_response_cache) > 256:
+            _response_cache.clear()
+        _response_cache[cache_key] = (time.time(), resp)
+    return resp
+
+
+def _build_sport_events(db: Session, provider_id: int, limit: int) -> "SportEventsResponse":
     # 1. Read pointer.
     pointer_row = (
         db.query(KvSettings).filter(KvSettings.key == POINTER_KEY).first()
@@ -249,7 +288,7 @@ def list_sport_events(
         seen_live_ids = set()
         for b in broadcasters:
             variants = _resolve_all_for_provider(
-                db, user.provider_id, b.broadcaster_name, channel_cache,
+                db, provider_id, b.broadcaster_name, channel_cache,
             )
             for chan in variants:
                 if chan.id in seen_live_ids:
