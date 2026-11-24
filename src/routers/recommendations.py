@@ -31,10 +31,18 @@ from typing import Iterable, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..database import get_db
-from ..models import IPTVUser, MovieStream, SeriesStream
+from ..models import (
+    IPTVUser,
+    MovieStream,
+    SeriesStream,
+    TMDBGenre,
+    movie_stream_genre_association,
+    series_stream_genre_association,
+)
 from ..services.adult import (
     adult_movie_category_ids,
     adult_serie_category_ids,
@@ -68,6 +76,9 @@ _DEFAULT_LIMIT = 20
 _MAX_LIMIT = 50
 _TMDB_HIT_POINTS = 2
 _GENRE_OVERLAP_POINTS = 1
+# Extra genre candidates beyond limit+exclusions (seed titles can appear
+# under several rows and are skipped during scoring).
+_CANDIDATE_PAD = 100
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +229,43 @@ def _score_candidates(
     return out
 
 
+
+def _candidate_rows(
+    db: Session, model, assoc_fk_col, category_col, provider_id: int,
+    category_ids: Optional[List[int]], adult_ids: set[int],
+    tmdb_hits: set[int], seed_genres: set[str], *, cap: int,
+) -> list:
+    """Rows that can score > 0, selected in SQL (see get_recommendations)."""
+    if category_ids is not None and not category_ids:
+        return []   # user deselected every category of this kind
+    base = db.query(model).filter(model.provider_id == provider_id).filter(
+        model.tmdb_id.isnot(None))
+    if category_ids:
+        base = base.filter(category_col.in_(category_ids))
+    base = apply_adult_filter(base, category_col, adult_ids, False)
+
+    rows: dict[int, object] = {}
+    if tmdb_hits:
+        for r in base.filter(model.tmdb_id.in_(tmdb_hits)).options(
+                selectinload(model.genres)).all():
+            rows[r.id] = r
+    if seed_genres:
+        genre_match = (
+            select(assoc_fk_col)
+            .join(TMDBGenre, TMDBGenre.id == assoc_fk_col.table.c.genre_id)
+            .where(TMDBGenre.name.in_(seed_genres))
+        )
+        for r in (
+            base.filter(model.id.in_(genre_match))
+            .order_by(func.coalesce(model.tmdb_popularity, 0).desc(), model.id)
+            .limit(cap)
+            .options(selectinload(model.genres))
+            .all()
+        ):
+            rows.setdefault(r.id, r)
+    return list(rows.values())
+
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
@@ -267,57 +315,32 @@ def get_recommendations(
     adult_movie_ids = adult_movie_category_ids(db, user.provider_id)
     adult_serie_ids = adult_serie_category_ids(db, user.provider_id)
 
-    if body.movie_category_ids is None:
-        movie_rows = (
-            apply_adult_filter(
-                db.query(MovieStream)
-                .options(selectinload(MovieStream.genres))
-                .filter(MovieStream.provider_id == user.provider_id)
-                .filter(MovieStream.tmdb_id.isnot(None)),
-                MovieStream.movie_category_id, adult_movie_ids, False,
-            )
-            .all()
-        )
-    elif not body.movie_category_ids:
-        movie_rows = []
-    else:
-        movie_rows = (
-            apply_adult_filter(
-                db.query(MovieStream)
-                .options(selectinload(MovieStream.genres))
-                .filter(MovieStream.provider_id == user.provider_id)
-                .filter(MovieStream.tmdb_id.isnot(None))
-                .filter(MovieStream.movie_category_id.in_(body.movie_category_ids)),
-                MovieStream.movie_category_id, adult_movie_ids, False,
-            )
-            .all()
-        )
+    # Mix movies + series at the configured limit. The Home row is
+    # mixed-type, so split roughly 60/40 movies/series — most providers
+    # have a deeper movie catalog. Caller can re-bucket by inspecting
+    # the response.
+    movie_take = max(1, limit * 6 // 10)
+    series_take = max(1, limit - movie_take)
 
-    if body.series_category_ids is None:
-        series_rows = (
-            apply_adult_filter(
-                db.query(SeriesStream)
-                .options(selectinload(SeriesStream.genres))
-                .filter(SeriesStream.provider_id == user.provider_id)
-                .filter(SeriesStream.tmdb_id.isnot(None)),
-                SeriesStream.series_category_id, adult_serie_ids, False,
-            )
-            .all()
-        )
-    elif not body.series_category_ids:
-        series_rows = []
-    else:
-        series_rows = (
-            apply_adult_filter(
-                db.query(SeriesStream)
-                .options(selectinload(SeriesStream.genres))
-                .filter(SeriesStream.provider_id == user.provider_id)
-                .filter(SeriesStream.tmdb_id.isnot(None))
-                .filter(SeriesStream.series_category_id.in_(body.series_category_ids)),
-                SeriesStream.series_category_id, adult_serie_ids, False,
-            )
-            .all()
-        )
+    # Candidate selection happens in SQL. Loading every titled row of the
+    # provider (100k+ ORM rows + genres) took ~400s and ~1GB per call and
+    # pinned the worker. Only two kinds of row can score > 0:
+    #   - tmdb_id in the TMDB-similar hits (small set, fetch all), and
+    #   - genre overlap with the seeds; among those, genre-only rows all
+    #     score the same and rank by popularity, so the top-N by
+    #     popularity (N padded for exclusions) yields the same result.
+    movie_rows = _candidate_rows(
+        db, MovieStream, movie_stream_genre_association.c.movie_stream_id,
+        MovieStream.movie_category_id, user.provider_id,
+        body.movie_category_ids, adult_movie_ids, movie_hits, seed_genres,
+        cap=movie_take + len(body.exclude_movie_ids) + _CANDIDATE_PAD,
+    )
+    series_rows = _candidate_rows(
+        db, SeriesStream, series_stream_genre_association.c.series_stream_id,
+        SeriesStream.series_category_id, user.provider_id,
+        body.series_category_ids, adult_serie_ids, series_hits, seed_genres,
+        cap=series_take + len(body.exclude_series_ids) + _CANDIDATE_PAD,
+    )
 
     movie_scored = _score_candidates(
         movie_rows,
@@ -338,12 +361,6 @@ def get_recommendations(
     movie_scored.sort(key=lambda t: (-t[0], -(t[1] or 0)))
     series_scored.sort(key=lambda t: (-t[0], -(t[1] or 0)))
 
-    # Mix movies + series at the configured limit. The Home row is
-    # mixed-type, so split roughly 60/40 movies/series — most providers
-    # have a deeper movie catalog. Caller can re-bucket by inspecting
-    # the response.
-    movie_take = max(1, limit * 6 // 10)
-    series_take = max(1, limit - movie_take)
 
     movies = [_movie_to_list_item(t[2]) for t in movie_scored[:movie_take]]
     series = [_series_to_list_item(t[2]) for t in series_scored[:series_take]]
