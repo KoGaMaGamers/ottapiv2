@@ -152,7 +152,8 @@ def _clear_stale_sync_flags() -> None:
         # runs that were in flight when the previous process stopped
         from ..models import SyncRun
         m = (db.query(SyncRun).filter(SyncRun.status == "running")
-             .update({SyncRun.status: "failed", SyncRun.error: "interrupted (process restart)"},
+             .update({SyncRun.status: "failed", SyncRun.error: "interrupted (process restart)",
+                      SyncRun.finished_at: datetime.utcnow()},
                      synchronize_session=False))
         db.commit()
         if n or m:

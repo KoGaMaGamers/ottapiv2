@@ -9,8 +9,8 @@ from ..config import GOLDENOTT_API_KEY, GOLDENOTT_API_URL
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30
-_INTER_CALL_DELAY = 0.4
-_MAX_429_RETRIES = 2
+_INTER_CALL_DELAY = 1.0   # ~60 req/min; 0.4s tripped GoldenOTT's 429 limit
+_MAX_429_RETRIES = 4
 
 
 class GoldenOTTClient:
@@ -34,7 +34,13 @@ class GoldenOTTClient:
             try:
                 resp = self._session.get(url, params=params, timeout=self.timeout)
                 if resp.status_code == 429 and attempt < _MAX_429_RETRIES:
-                    retry_after = float(resp.headers.get("Retry-After") or (2 ** attempt))
+                    # GoldenOTT sends "Retry-After: 0" at the window edge and then 429s
+                    # the instant retry, so never wait less than an exponential floor.
+                    try:
+                        hinted = float(resp.headers.get("Retry-After") or 0)
+                    except ValueError:
+                        hinted = 0.0
+                    retry_after = min(120.0, max(hinted, 5.0 * 2 ** attempt))
                     logger.info("GoldenOTT 429 on %s; sleeping %.1fs before retry", path, retry_after)
                     time.sleep(retry_after)
                     continue
