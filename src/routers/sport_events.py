@@ -112,7 +112,7 @@ def _sort_variants(streams: Iterable[LiveStream]) -> list[LiveStream]:
 
 def _resolve_all_for_provider(
     db: Session, provider_id: int, broadcaster: str,
-    channel_cache: dict[int, list[LiveStream]],
+    channel_cache: dict[int, list[tuple[LiveStream, str, frozenset]]],
 ) -> list[LiveStream]:
     """Return EVERY LiveStream that matches `broadcaster` under
     `provider_id`. Same layered match as ingest.py, but where the
@@ -135,7 +135,14 @@ def _resolve_all_for_provider(
                 LiveStream.live_category_id.notin_(adult_ids)
                 | LiveStream.live_category_id.is_(None)
             )
-        channel_cache[provider_id] = q.all()
+        # Normalize each channel name ONCE per request. Re-normalizing
+        # ~30k names for every broadcaster (25+ per batch) cost ~900k
+        # regex passes and pinned the worker CPU.
+        cached = []
+        for r in q.all():
+            n = _normalize(r.name)
+            cached.append((r, n, frozenset(n.split())))
+        channel_cache[provider_id] = cached
     rows = channel_cache[provider_id]
     if not rows:
         return []
@@ -145,8 +152,8 @@ def _resolve_all_for_provider(
     # Layer 2 — exact normalized match. Since _normalize strips
     # HD/FHD/HEVC/SD/region tokens, every quality variant of the same
     # base channel collapses to the same string and gets picked up.
-    for r in rows:
-        if _normalize(r.name) == norm:
+    for r, rn, _ in rows:
+        if rn == norm:
             matches[r.id] = r
     if matches:
         return _sort_variants(matches.values())
@@ -165,8 +172,8 @@ def _resolve_all_for_provider(
         target = db.get(LiveStream, alias.live_stream_id)
         if target is not None:
             target_norm = _normalize(target.name)
-            for r in rows:
-                if _normalize(r.name) == target_norm:
+            for r, rn, _ in rows:
+                if rn == target_norm:
                     matches[r.id] = r
             if matches:
                 return _sort_variants(matches.values())
@@ -175,8 +182,7 @@ def _resolve_all_for_provider(
     tokens = norm.split()
     if not tokens:
         return []
-    for r in rows:
-        rn_tokens = set(_normalize(r.name).split())
+    for r, _, rn_tokens in rows:
         if all(t in rn_tokens for t in tokens):
             matches[r.id] = r
     return _sort_variants(matches.values())
