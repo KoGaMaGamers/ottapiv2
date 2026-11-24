@@ -243,7 +243,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
             )
         # Existing user: per spec, login does NOT mutate any iptv_users fields.
         db.commit()
-        token = create_user_token(existing.username)
+        token = create_user_token(existing.username, existing.token_version)
         view_mode = "curated" if provider.is_populated else "fallback"
         return LoginResponse(
             token=token,
@@ -279,7 +279,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     if not provider.is_populated:
         sync_triggered = trigger_provider_sync(provider.id)
 
-    token = create_user_token(new_user.username)
+    token = create_user_token(new_user.username, new_user.token_version)
     view_mode = "curated" if provider.is_populated else "fallback"
     return LoginResponse(
         token=token,

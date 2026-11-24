@@ -63,6 +63,8 @@ class UserPatch(BaseModel):
     subscription_exp_date: Optional[datetime] = Field(default=None)
     admin_note:            Optional[str] = Field(default=None)
     is_active:             Optional[bool] = Field(default=None)
+    # True -> invalidate every session token this user holds.
+    revoke_sessions:       Optional[bool] = Field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +227,14 @@ def patch_user(
     if body.is_active is not None:
         if bool(u.is_active) != body.is_active:
             diff["is_active"] = (bool(u.is_active), body.is_active)
+            if not body.is_active:
+                body.revoke_sessions = True   # disabling logs the user out
         u.is_active = body.is_active
+
+    if body.revoke_sessions:
+        old_v = int(u.token_version or 0)
+        u.token_version = old_v + 1
+        diff["token_version"] = (old_v, u.token_version)
 
     db.commit()
     db.refresh(u)

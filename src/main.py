@@ -28,6 +28,7 @@ from .routers import (
 )
 from .services.scheduler import start_scheduler, stop_scheduler
 from .services import memwatch
+from .services.auth_service import assert_secret_configured
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +47,7 @@ log_redact.install()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    assert_secret_configured()   # refuse to run with forgeable tokens
     start_scheduler()
     memwatch.start_sampler()
     yield

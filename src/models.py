@@ -102,6 +102,8 @@ class IPTVUser(Base):
     device_type = Column(String(20), nullable=True)
     preferred_output = Column(String(10), default="m3u8")
     is_active = Column(Boolean, default=True)
+    # Bumped to revoke all of this user's session tokens (see auth_service).
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")
     is_connected = Column(Boolean, default=False)
     stream_count = Column(Integer, nullable=True)
     last_checked_at = Column(DateTime, nullable=True)
