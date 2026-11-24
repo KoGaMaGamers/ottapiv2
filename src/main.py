@@ -39,6 +39,8 @@ logging.basicConfig(
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
 logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+# httpx logs every request URL at INFO (provider creds, API keys) — noise + risk.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log_redact.install()
 
 

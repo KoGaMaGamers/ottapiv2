@@ -115,7 +115,7 @@ def search_subtitles(
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(SUBDL_API_BASE, params=params)
-            logger.info("SUBDL response: status=%d url=%s", resp.status_code, resp.url)
+            logger.info("SUBDL response: status=%d", resp.status_code)
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPError as exc:
