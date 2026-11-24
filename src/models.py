@@ -219,6 +219,8 @@ class SerieCategory(Base):
 
 class LiveStream(Base):
     __tablename__ = "live_streams"
+    # Set when the provider stops listing it (soft delete, see bottom of file).
+    removed_at = Column(DateTime, nullable=True)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider_id = Column(Integer, ForeignKey("xtream_providers.id"), nullable=False)
@@ -280,6 +282,8 @@ class TMDBGenre(Base):
 
 class MovieStream(Base):
     __tablename__ = "movie_streams"
+    # Set when the provider stops listing it (soft delete, see bottom of file).
+    removed_at = Column(DateTime, nullable=True)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider_id = Column(Integer, ForeignKey("xtream_providers.id"), nullable=False)
@@ -352,6 +356,8 @@ class MovieStream(Base):
 
 class SeriesStream(Base):
     __tablename__ = "series_streams"
+    # Set when the provider stops listing it (soft delete, see bottom of file).
+    removed_at = Column(DateTime, nullable=True)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider_id = Column(Integer, ForeignKey("xtream_providers.id"), nullable=False)
@@ -713,3 +719,40 @@ class ProviderPressureSample(Base):
         Index("ix_pressure_snapshot_at", "snapshot_at"),
         Index("ix_pressure_provider_snapshot", "provider_id", "snapshot_at"),
     )
+
+
+class SyncRun(Base):
+    """One row per background job run (see services/sync_runs.py)."""
+    __tablename__ = "sync_runs"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    provider_id = Column(Integer, nullable=True)
+    phase = Column(String(32), nullable=False)
+    status = Column(String(16), nullable=False)
+    started_at = Column(DateTime, nullable=False)
+    finished_at = Column(DateTime, nullable=True)
+    summary = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+
+# ---------------------------------------------------------------------------
+# Soft-delete filter: hide catalog rows the provider no longer lists.
+# Applies to every ORM SELECT (incl. db.get, relationships, column queries).
+# The catalog sync opts out with SessionLocal(info={"include_removed": True})
+# or .execution_options(include_removed=True) so it can revive rows.
+# ---------------------------------------------------------------------------
+from sqlalchemy import event as _event  # noqa: E402
+from sqlalchemy.orm import Session as _Session, with_loader_criteria as _wlc  # noqa: E402
+
+_SOFT_DELETED = (LiveStream, MovieStream, SeriesStream)
+
+
+@_event.listens_for(_Session, "do_orm_execute")
+def _hide_removed_rows(state):
+    if not state.is_select:
+        return
+    if state.execution_options.get("include_removed") or state.session.info.get("include_removed"):
+        return
+    state.statement = state.statement.options(*[
+        _wlc(m, lambda cls: cls.removed_at.is_(None), include_aliases=True)
+        for m in _SOFT_DELETED
+    ])

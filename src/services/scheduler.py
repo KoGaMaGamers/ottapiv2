@@ -100,11 +100,34 @@ def _run_pressure_prune() -> None:
         db.close()
 
 
+def scheduler_running() -> bool:
+    return _scheduler is not None and bool(_scheduler.running)
+
+
+def _clear_stale_sync_flags() -> None:
+    """A fresh process has no sync running: clear sync_started_at left
+    behind by a restart mid-sync (admin page showed "syncing" forever)."""
+    db = SessionLocal()
+    try:
+        n = (db.query(XtreamProvider)
+             .filter(XtreamProvider.sync_started_at.isnot(None))
+             .update({XtreamProvider.sync_started_at: None}, synchronize_session=False))
+        db.commit()
+        if n:
+            logger.info("cleared stale sync_started_at on %d provider(s)", n)
+    except Exception:
+        logger.exception("could not clear stale sync flags")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def start_scheduler() -> None:
     global _scheduler
     if _scheduler is not None:
         return
     _scheduler = BackgroundScheduler(timezone="UTC")
+    _clear_stale_sync_flags()
 
     _scheduler.add_job(
         run_goldenott_sync,

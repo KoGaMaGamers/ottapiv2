@@ -18,6 +18,7 @@ from .dns_health_service import (
 )
 from .goldenott_client import GoldenOTTClient
 
+from .sync_runs import tracked
 logger = logging.getLogger(__name__)
 
 # On-demand domain refresh throttle: at most one GoldenOTT /domains call per
@@ -354,6 +355,7 @@ def sync_lines(
         logger.info("Soft-removed user %s (no longer in upstream)", user.username)
 
 
+@tracked("goldenott")
 def run_sync(provider_id: Optional[int] = None) -> dict:
     """Top-level entry point. Opens a session, runs both phases, commits, returns summary dict."""
     pid = provider_id if provider_id is not None else GOLDENOTT_PROVIDER_ID

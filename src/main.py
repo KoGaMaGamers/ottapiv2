@@ -28,6 +28,15 @@ from .routers import (
 )
 from .services.scheduler import start_scheduler, stop_scheduler
 from .services import memwatch
+from datetime import datetime, timedelta
+
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+
+from .database import SessionLocal, engine
+from .models import SyncRun, XtreamProvider
+from .services.scheduler import scheduler_running
 from .services.auth_service import assert_secret_configured
 
 logging.basicConfig(
@@ -113,4 +122,46 @@ app.mount("/static", StaticFiles(directory=_static_root), name="static")
 
 @app.get("/health")
 def health():
+    """Liveness for uptime monitors: 503 if MySQL or the scheduler is down."""
+    problems = []
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        problems.append(f"db: {type(exc).__name__}")
+    if not scheduler_running():
+        problems.append("scheduler not running")
+    if problems:
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "problems": problems})
     return {"status": "healthy"}
+
+
+_SYNC_MAX_AGE = timedelta(hours=36)
+
+
+@app.get("/health/sync")
+def health_sync():
+    """Catalog freshness for uptime monitors: 503 when a populated provider
+    has no successful catalog sync in 36h, or its latest catalog run failed.
+    (The provider-1 sync failed silently for 7 weeks before this existed.)"""
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        out, problems = [], []
+        for p in db.query(XtreamProvider).filter(XtreamProvider.is_populated == True):  # noqa: E712
+            last = (db.query(SyncRun)
+                    .filter(SyncRun.provider_id == p.id, SyncRun.phase == "catalog",
+                            SyncRun.status != "running")
+                    .order_by(SyncRun.started_at.desc()).first())
+            age_h = round((now - p.last_synced_at).total_seconds() / 3600, 1) if p.last_synced_at else None
+            entry = {"provider_id": p.id, "last_synced_at": p.last_synced_at,
+                     "age_hours": age_h, "last_run_status": last.status if last else None}
+            out.append(entry)
+            if p.last_synced_at is None or now - p.last_synced_at > _SYNC_MAX_AGE:
+                problems.append(f"provider {p.id}: catalog older than 36h")
+            if last is not None and last.status == "failed":
+                problems.append(f"provider {p.id}: last catalog run failed")
+        body = {"status": "stale" if problems else "fresh", "problems": problems, "providers": out}
+        return JSONResponse(status_code=503 if problems else 200, content=jsonable_encoder(body))
+    finally:
+        db.close()

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
@@ -50,6 +50,8 @@ from .catalog_parser import (
 )
 from .xtream_client import XtreamClient
 
+from .job_locks import exclusive, is_running
+from .sync_runs import tracked
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +69,12 @@ class SyncSummary:
     serie_categories_updated: int = 0
     series_streams_inserted: int = 0
     series_streams_updated: int = 0
+    live_streams_removed: int = 0
+    live_streams_revived: int = 0
+    movie_streams_removed: int = 0
+    movie_streams_revived: int = 0
+    series_streams_removed: int = 0
+    series_streams_revived: int = 0
     series_episodes_skipped: int = 0
     series_episodes_fetched: int = 0
     series_episodes_failed: int = 0
@@ -157,7 +165,7 @@ def _sync_live_categories(
     db: Session, provider: XtreamProvider, client: XtreamClient, summary: SyncSummary
 ) -> dict[int, int]:
     """Returns {upstream_category_id: local_LiveCategory.id} for the leaves."""
-    raw = client.get_live_categories() or []
+    raw = _require_list(client.get_live_categories(), "get_live_categories")
 
     # In-memory index of existing live_category rows for this provider:
     #   key = (parent_id_or_None, lowercased_name)  -> LiveCategory.id
@@ -216,8 +224,55 @@ def _sync_live_categories(
                 leaf.category_id = upstream_cat_id
             leaf_lookup[upstream_cat_id] = leaf_local_id
 
+    # A renamed upstream category creates a new node; the old node kept the
+    # same upstream category_id, so the index picked one arbitrarily. Clear
+    # the id on every node that's no longer the mapped leaf for it.
+    db.flush()
+    for r in (
+        db.query(LiveCategory.id, LiveCategory.category_id)
+        .filter(LiveCategory.provider_id == provider.id)
+        .filter(LiveCategory.category_id.isnot(None))
+        .all()
+    ):
+        if leaf_lookup.get(r.category_id) != r.id:
+            (db.query(LiveCategory).filter(LiveCategory.id == r.id)
+             .update({LiveCategory.category_id: None}, synchronize_session=False))
     db.flush()
     return leaf_lookup
+
+
+def _prune_empty_live_categories(db: Session, provider_id: int) -> int:
+    """Delete unmapped live-category nodes with no channels and no children
+    (left behind by upstream renames). Bottom-up until nothing changes.
+    Run AFTER _sync_live_streams so channels were re-pointed first."""
+    removed = 0
+    while True:
+        used = select(LiveStream.live_category_id).where(
+            LiveStream.provider_id == provider_id,
+            LiveStream.live_category_id.isnot(None),
+        )
+        parents = select(LiveCategory.parent_id).where(
+            LiveCategory.provider_id == provider_id,
+            LiveCategory.parent_id.isnot(None),
+        )
+        ids = [
+            r.id for r in db.query(LiveCategory.id)
+            # soft-removed channels still hold the FK: they must count as "used"
+            .execution_options(include_removed=True)
+            .filter(LiveCategory.provider_id == provider_id)
+            .filter(LiveCategory.category_id.is_(None))
+            .filter(LiveCategory.id.notin_(used))
+            .filter(LiveCategory.id.notin_(parents))
+            .all()
+        ]
+        if not ids:
+            break
+        db.query(LiveCategory).filter(LiveCategory.id.in_(ids)).delete(synchronize_session=False)
+        db.commit()
+        removed += len(ids)
+    if removed:
+        logger.info("live categories: pruned %d empty stale node(s)", removed)
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +282,7 @@ def _sync_live_categories(
 def _sync_movie_categories(
     db: Session, provider: XtreamProvider, client: XtreamClient, summary: SyncSummary
 ) -> dict[int, int]:
-    raw = client.get_vod_categories() or []
+    raw = _require_list(client.get_vod_categories(), "get_vod_categories")
     local_rows = (
         db.query(MovieCategory)
         .filter(MovieCategory.provider_id == provider.id)
@@ -278,7 +333,7 @@ def _sync_movie_categories(
 def _sync_serie_categories(
     db: Session, provider: XtreamProvider, client: XtreamClient, summary: SyncSummary
 ) -> dict[int, int]:
-    raw = client.get_series_categories() or []
+    raw = _require_list(client.get_series_categories(), "get_series_categories")
     local_rows = (
         db.query(SerieCategory)
         .filter(SerieCategory.provider_id == provider.id)
@@ -331,6 +386,57 @@ def _sync_serie_categories(
 # ---------------------------------------------------------------------------
 
 _COMMIT_BATCH = 5000
+_MAX_SUMMARY_ERRORS = 50   # keep the summary/log line bounded
+
+
+class UpstreamFetchError(RuntimeError):
+    """The provider returned nothing usable for a full-list endpoint."""
+
+
+def _require_list(value, what: str) -> list:
+    """A failed/garbled fetch must abort the phase, not look like an empty
+    catalog (which previously recorded a successful sync with 0 items)."""
+    if not isinstance(value, list):
+        raise UpstreamFetchError(f"{what}: provider returned no list ({type(value).__name__})")
+    return value
+
+
+# Don't soft-delete when upstream suddenly lists < this share of what we
+# have: far more likely a truncated/broken response than real removals.
+_PRUNE_MIN_RATIO = 0.5
+
+
+def _prune_and_revive(db: Session, model, xid_col, provider_id: int,
+                      seen: set[int], label: str, summary: "SyncSummary") -> None:
+    """Soft-delete rows missing upstream; revive removed rows that came back."""
+    rows = (
+        db.query(model.id, xid_col, model.removed_at)
+        .execution_options(include_removed=True)
+        .filter(model.provider_id == provider_id)
+        .all()
+    )
+    active = [r for r in rows if r.removed_at is None]
+    to_remove = [r.id for r in active if r[1] not in seen]
+    to_revive = [r.id for r in rows if r.removed_at is not None and r[1] in seen]
+
+    if to_remove and len(seen) < _PRUNE_MIN_RATIO * len(active):
+        msg = (f"{label}: upstream lists {len(seen)} vs {len(active)} local; "
+               f"skipping removal of {len(to_remove)} rows (suspicious response)")
+        logger.warning(msg)
+        summary.errors.append(msg)
+        to_remove = []
+
+    now = datetime.utcnow()
+    for ids, value in ((to_remove, now), (to_revive, None)):
+        for i in range(0, len(ids), 1000):
+            (db.query(model).execution_options(include_removed=True)
+             .filter(model.id.in_(ids[i:i + 1000]))
+             .update({model.removed_at: value}, synchronize_session=False))
+    db.commit()
+    setattr(summary, f"{label}_removed", len(to_remove))
+    setattr(summary, f"{label}_revived", len(to_revive))
+    if to_remove or to_revive:
+        logger.info("%s: soft-removed %d, revived %d", label, len(to_remove), len(to_revive))
 
 
 def _sync_live_streams(
@@ -340,7 +446,7 @@ def _sync_live_streams(
     cat_index: dict[int, int],
     summary: SyncSummary,
 ) -> None:
-    upstream = client.get_live_streams() or []
+    upstream = _require_list(client.get_live_streams(), "get_live_streams")
 
     # Self-heal: drop any prior `###...###` category-separator rows. These
     # aren't real streams (Xtream encodes section dividers as fake channel
@@ -369,12 +475,16 @@ def _sync_live_streams(
     ).delete(synchronize_session=False)
 
     local = (
-        db.query(LiveStream.id, LiveStream.stream_id, LiveStream.category_id, LiveStream.added)
+        db.query(LiveStream.id, LiveStream.stream_id, LiveStream.category_id,
+                 LiveStream.live_category_id, LiveStream.added, LiveStream.raw_name,
+                 LiveStream.stream_icon, LiveStream.epg_channel_id)
+        .execution_options(include_removed=True)
         .filter(LiveStream.provider_id == provider.id)
         .all()
     )
-    local_index = {r.stream_id: (r.id, r.category_id, r.added) for r in local}
+    local_index = {r.stream_id: r for r in local}
 
+    seen: set[int] = set()
     pending = 0
     for item in upstream:
         sid = _to_int(item.get("stream_id"))
@@ -383,6 +493,7 @@ def _sync_live_streams(
         parsed_name = _safe_text(parse_live_stream_name(item.get("name") or ""), 512) or ""
         if is_category_separator(parsed_name):
             continue
+        seen.add(sid)
         upstream_cat = _to_int(item.get("category_id"))
         added_dt = _ts_to_dt(item.get("added"))
         live_cat_fk = cat_index.get(upstream_cat) if upstream_cat else None
@@ -409,17 +520,28 @@ def _sync_live_streams(
             summary.live_streams_inserted += 1
             pending += 1
         else:
-            local_id, local_cat, local_added = existing
-            if local_cat == upstream_cat and (added_dt is None or local_added == added_dt):
+            raw_name = _safe_text(item.get("name"), 512)
+            icon = _safe_url(item.get("stream_icon"))
+            epg = _safe_text(item.get("epg_channel_id"), 255)
+            changes = {}
+            # Re-point the FK whenever it differs from the index, not only on
+            # an upstream category_id change (fixes channels left on a stale
+            # node after a category rename).
+            if existing.category_id != upstream_cat or existing.live_category_id != live_cat_fk:
+                changes.update(category_id=upstream_cat, live_category_id=live_cat_fk)
+            if added_dt and existing.added != added_dt:
+                changes["added"] = added_dt
+            if raw_name and existing.raw_name != raw_name:
+                changes.update(raw_name=raw_name, name=parsed_name)
+            if icon != existing.stream_icon:
+                changes["stream_icon"] = icon
+            if epg != existing.epg_channel_id:
+                changes["epg_channel_id"] = epg
+            if not changes:
                 continue
-            row = db.get(LiveStream, local_id)
-            if row is None:
-                continue
-            if local_cat != upstream_cat:
-                row.category_id = upstream_cat
-                row.live_category_id = live_cat_fk
-            if added_dt and local_added != added_dt:
-                row.added = added_dt
+            (db.query(LiveStream).execution_options(include_removed=True)
+             .filter(LiveStream.id == existing.id)
+             .update(changes, synchronize_session=False))
             summary.live_streams_updated += 1
             pending += 1
 
@@ -429,6 +551,8 @@ def _sync_live_streams(
 
     if pending:
         db.commit()
+    _prune_and_revive(db, LiveStream, LiveStream.stream_id, provider.id, seen,
+                      "live_streams", summary)
 
 
 def _sync_movie_streams(
@@ -438,19 +562,24 @@ def _sync_movie_streams(
     cat_index: dict[int, int],
     summary: SyncSummary,
 ) -> None:
-    upstream = client.get_vod_streams() or []
+    upstream = _require_list(client.get_vod_streams(), "get_vod_streams")
     local = (
-        db.query(MovieStream.id, MovieStream.xtream_id, MovieStream.category_id, MovieStream.added)
+        db.query(MovieStream.id, MovieStream.xtream_id, MovieStream.category_id,
+                 MovieStream.movie_category_id, MovieStream.added, MovieStream.raw_name,
+                 MovieStream.stream_icon, MovieStream.container_extension)
+        .execution_options(include_removed=True)
         .filter(MovieStream.provider_id == provider.id)
         .all()
     )
-    local_index = {r.xtream_id: (r.id, r.category_id, r.added) for r in local}
+    local_index = {r.xtream_id: r for r in local}
 
+    seen: set[int] = set()
     pending = 0
     for item in upstream:
         xid = _to_int(item.get("stream_id"))
         if not xid:
             continue
+        seen.add(xid)
         upstream_cat = _to_int(item.get("category_id"))
         added_dt = _ts_to_dt(item.get("added"))
         cat_fk = cat_index.get(upstream_cat) if upstream_cat else None
@@ -482,17 +611,34 @@ def _sync_movie_streams(
             summary.movie_streams_inserted += 1
             pending += 1
         else:
-            local_id, local_cat, local_added = existing
-            if local_cat == upstream_cat and (added_dt is None or local_added == added_dt):
+            raw_name = _safe_text(item.get("name"), 512)
+            icon = _safe_url(item.get("stream_icon"))
+            ext = _safe_text(item.get("container_extension"), 20)
+            changes = {}
+            if existing.category_id != upstream_cat or existing.movie_category_id != cat_fk:
+                changes.update(category_id=upstream_cat, movie_category_id=cat_fk)
+            if added_dt and existing.added != added_dt:
+                changes["added"] = added_dt
+            if icon and icon != existing.stream_icon:
+                changes["stream_icon"] = icon
+            if ext and ext != existing.container_extension:
+                changes["container_extension"] = ext
+            if raw_name and existing.raw_name != raw_name:
+                # Renamed (or the panel reused the stream_id for another
+                # title): refresh the parsed name and re-run details + TMDB
+                # so stale metadata doesn't stick to the new title.
+                language, title, year = parse_movie_stream_name(item.get("name") or "")
+                changes.update(
+                    raw_name=raw_name, name=_safe_text(title, 512) or "",
+                    language=_safe_text(language, 10), year=year,
+                    details_synced_at=None, tmdb_synced_at=None, tmdb_id=None,
+                    tmdb_attempts=0, tmdb_last_attempt_at=None,
+                )
+            if not changes:
                 continue
-            row = db.get(MovieStream, local_id)
-            if row is None:
-                continue
-            if local_cat != upstream_cat:
-                row.category_id = upstream_cat
-                row.movie_category_id = cat_fk
-            if added_dt and local_added != added_dt:
-                row.added = added_dt
+            (db.query(MovieStream).execution_options(include_removed=True)
+             .filter(MovieStream.id == existing.id)
+             .update(changes, synchronize_session=False))
             summary.movie_streams_updated += 1
             pending += 1
 
@@ -502,6 +648,8 @@ def _sync_movie_streams(
 
     if pending:
         db.commit()
+    _prune_and_revive(db, MovieStream, MovieStream.xtream_id, provider.id, seen,
+                      "movie_streams", summary)
 
 
 def _sync_series_streams(
@@ -510,25 +658,33 @@ def _sync_series_streams(
     client: XtreamClient,
     cat_index: dict[int, int],
     summary: SyncSummary,
-) -> None:
-    upstream = client.get_series() or []
+) -> list:
+    """Returns the upstream series list (reused by the episodes phase
+    instead of downloading it a second time)."""
+    upstream = _require_list(client.get_series(), "get_series")
     local = (
         db.query(
             SeriesStream.id,
             SeriesStream.xtream_id,
             SeriesStream.category_id,
+            SeriesStream.series_category_id,
             SeriesStream.last_modified,
+            SeriesStream.raw_name,
+            SeriesStream.cover,
         )
+        .execution_options(include_removed=True)
         .filter(SeriesStream.provider_id == provider.id)
         .all()
     )
-    local_index = {r.xtream_id: (r.id, r.category_id, r.last_modified) for r in local}
+    local_index = {r.xtream_id: r for r in local}
 
+    seen: set[int] = set()
     pending = 0
     for item in upstream:
         sid = _to_int(item.get("series_id"))
         if not sid:
             continue
+        seen.add(sid)
         upstream_cat = _to_int(item.get("category_id"))
         last_modified_dt = _ts_to_dt(item.get("last_modified"))
         cat_fk = cat_index.get(upstream_cat) if upstream_cat else None
@@ -567,17 +723,34 @@ def _sync_series_streams(
             summary.series_streams_inserted += 1
             pending += 1
         else:
-            local_id, local_cat, local_lm = existing
-            if local_cat == upstream_cat and (last_modified_dt is None or local_lm == last_modified_dt):
+            raw_name = _safe_text(item.get("name"), 512)
+            cover = _safe_url(item.get("cover"))
+            changes = {}
+            if existing.category_id != upstream_cat or existing.series_category_id != cat_fk:
+                changes.update(category_id=upstream_cat, series_category_id=cat_fk)
+            if last_modified_dt and existing.last_modified != last_modified_dt:
+                changes["last_modified"] = last_modified_dt
+                # metadata may have changed with it
+                changes.update(
+                    plot=item.get("plot"), cast=item.get("cast"),
+                    director=_safe_text(item.get("director"), 512),
+                    backdrop_path=_safe_url(_first_or_value(item.get("backdrop_path"))),
+                )
+            if cover and cover != existing.cover:
+                changes.update(cover=cover, stream_icon=cover)
+            if raw_name and existing.raw_name != raw_name:
+                language, name = parse_series_stream_name(item.get("name") or "")
+                changes.update(
+                    raw_name=raw_name, name=_safe_text(name, 512) or "",
+                    language=_safe_text(language, 10),
+                    tmdb_synced_at=None, tmdb_id=None,
+                    tmdb_attempts=0, tmdb_last_attempt_at=None,
+                )
+            if not changes:
                 continue
-            row = db.get(SeriesStream, local_id)
-            if row is None:
-                continue
-            if local_cat != upstream_cat:
-                row.category_id = upstream_cat
-                row.series_category_id = cat_fk
-            if last_modified_dt and local_lm != last_modified_dt:
-                row.last_modified = last_modified_dt
+            (db.query(SeriesStream).execution_options(include_removed=True)
+             .filter(SeriesStream.id == existing.id)
+             .update(changes, synchronize_session=False))
             summary.series_streams_updated += 1
             pending += 1
 
@@ -587,6 +760,9 @@ def _sync_series_streams(
 
     if pending:
         db.commit()
+    _prune_and_revive(db, SeriesStream, SeriesStream.xtream_id, provider.id, seen,
+                      "series_streams", summary)
+    return upstream
 
 
 # ---------------------------------------------------------------------------
@@ -640,9 +816,15 @@ def _episode_sync_up_to_date(series: SeriesStream, upstream_last_modified: Optio
 
 
 def _upsert_seasons(
-    db: Session, series: SeriesStream, seasons_data: list[dict], summary: SyncSummary
+    db: Session, series: SeriesStream, seasons_data: list[dict], summary: SyncSummary,
+    episode_season_numbers: Optional[set[int]] = None,
 ) -> dict[int, int]:
-    """Returns {season_number: SeriesSeason.id}."""
+    """Returns {season_number: SeriesSeason.id}.
+
+    Many panels return an empty/partial ``seasons`` list while episodes are
+    keyed by season number; any season referenced only by episodes gets a
+    minimal row so its episodes aren't dropped (and then pruned).
+    """
     existing = (
         db.query(SeriesSeason)
         .filter(SeriesSeason.series_id == series.id)
@@ -689,6 +871,16 @@ def _upsert_seasons(
             if changed:
                 summary.seasons_updated += 1
         out[sn] = row.id
+
+    for sn in sorted((episode_season_numbers or set()) - set(out)):
+        row = by_num.get(sn)
+        if row is None:
+            row = SeriesSeason(series_id=series.id, provider_id=series.provider_id,
+                               season_number=sn, name=f"Season {sn}")
+            db.add(row)
+            db.flush()
+            summary.seasons_inserted += 1
+        out[sn] = row.id
     return out
 
 
@@ -720,15 +912,30 @@ def _upsert_episodes(
     summary: SyncSummary,
 ) -> set[int]:
     """Returns the set of upstream xtream_ids we touched (for prune)."""
+    block = _normalize_episodes_block(episodes_block)
+    block_xids = {
+        x for eps in block.values() if isinstance(eps, list)
+        for x in (_to_int(e.get("id")) for e in eps if isinstance(e, dict)) if x is not None
+    }
+    # Look episodes up by the unique key (provider_id, xtream_id), not by
+    # series: an episode that moved between series used to hit
+    # uq_series_episode_provider_xtream on INSERT and abort the batch.
     existing_rows = (
         db.query(SeriesEpisode)
         .filter(SeriesEpisode.series_id == series.id)
         .all()
     )
+    if block_xids:
+        existing_rows += (
+            db.query(SeriesEpisode)
+            .filter(SeriesEpisode.provider_id == series.provider_id)
+            .filter(SeriesEpisode.xtream_id.in_(block_xids))
+            .filter(SeriesEpisode.series_id != series.id)
+            .all()
+        )
     existing = {row.xtream_id: row for row in existing_rows}
 
     seen: set[int] = set()
-    block = _normalize_episodes_block(episodes_block)
     for season_key, ep_list in block.items():
         season_number = _to_int(season_key)
         if season_number is None or not isinstance(ep_list, list):
@@ -794,8 +1001,8 @@ def _upsert_episodes(
             else:
                 changed = False
                 for k, v in payload.items():
-                    if k in ("series_id", "provider_id", "xtream_id"):
-                        continue
+                    if k in ("provider_id", "xtream_id"):
+                        continue   # series_id may change: re-parent moved episodes
                     if getattr(row, k) != v:
                         setattr(row, k, v)
                         changed = True
@@ -810,8 +1017,8 @@ def _sync_series_episodes(
     provider: XtreamProvider,
     client: XtreamClient,
     summary: SyncSummary,
+    upstream_series: list,
 ) -> None:
-    upstream_series = client.get_series() or []
     upstream_by_xid = {
         int(s["series_id"]): s
         for s in upstream_series
@@ -848,31 +1055,41 @@ def _sync_series_episodes(
 
         info = client.get_series_info(ss.xtream_id)
         if not info:
-            summary.errors.append(f"series xtream_id={ss.xtream_id}: get_series_info failed")
+            if len(summary.errors) < _MAX_SUMMARY_ERRORS:
+                summary.errors.append(f"series xtream_id={ss.xtream_id}: get_series_info failed")
             summary.series_episodes_failed += 1
             continue
 
         try:
-            season_ids = _upsert_seasons(db, ss, info.get("seasons") or [], summary)
-            seen_eps = _upsert_episodes(
-                db, ss, info.get("episodes") or {}, season_ids, summary
-            )
-            if seen_eps:
-                stale = (
-                    db.query(SeriesEpisode)
-                    .filter(SeriesEpisode.series_id == ss.id)
-                    .filter(~SeriesEpisode.xtream_id.in_(seen_eps))
-                    .all()
+            # SAVEPOINT per series: a failure rolls back only this series,
+            # not the up-to-49 already processed since the last commit.
+            with db.begin_nested():
+                episodes_block = info.get("episodes") or {}
+                ep_seasons = {
+                    n for n in (_to_int(k) for k in _normalize_episodes_block(episodes_block))
+                    if n is not None
+                }
+                season_ids = _upsert_seasons(
+                    db, ss, info.get("seasons") or [], summary, ep_seasons,
                 )
-                for row in stale:
-                    db.delete(row)
-                    summary.episodes_pruned += 1
-            ss.episodes_last_synced_at = upstream_last_modified or datetime.utcnow()
+                seen_eps = _upsert_episodes(db, ss, episodes_block, season_ids, summary)
+                db.flush()
+                if seen_eps:
+                    stale = (
+                        db.query(SeriesEpisode)
+                        .filter(SeriesEpisode.series_id == ss.id)
+                        .filter(~SeriesEpisode.xtream_id.in_(seen_eps))
+                        .all()
+                    )
+                    for row in stale:
+                        db.delete(row)
+                        summary.episodes_pruned += 1
+                ss.episodes_last_synced_at = upstream_last_modified or datetime.utcnow()
         except Exception as exc:
             logger.warning("series xtream_id=%s upsert failed: %s", ss.xtream_id, exc)
-            summary.errors.append(f"series xtream_id={ss.xtream_id}: {exc}")
+            if len(summary.errors) < _MAX_SUMMARY_ERRORS:
+                summary.errors.append(f"series xtream_id={ss.xtream_id}: {exc}")
             summary.series_episodes_failed += 1
-            db.rollback()
             continue
 
         summary.series_episodes_fetched += 1
@@ -1001,6 +1218,8 @@ def _apply_vod_info_to_movie(ms: MovieStream, info: dict) -> None:
             ms.audio_channel_layout = _safe_text(audio.get("channel_layout"), 50)
 
 
+@tracked("movie_details")
+@exclusive("enrich")
 def run_movie_details_sync(provider_id: int) -> dict:
     """Background phase 3: per-movie get_vod_info enrichment.
 
@@ -1091,6 +1310,8 @@ def run_movie_details_sync(provider_id: int) -> dict:
 
 def trigger_movie_details_sync(provider_id: int) -> bool:
     """Spawn movie details sync as a daemon thread."""
+    if is_running("enrich", provider_id):
+        return False
     threading.Thread(
         target=run_movie_details_sync,
         args=(provider_id,),
@@ -1104,6 +1325,8 @@ def trigger_movie_details_sync(provider_id: int) -> bool:
 # Top-level entry
 # ---------------------------------------------------------------------------
 
+@tracked("catalog")
+@exclusive("catalog")
 def run_catalog_sync(provider_id: int) -> dict:
     summary = SyncSummary(provider_id=provider_id)
     db: Session = SessionLocal()
@@ -1142,9 +1365,10 @@ def run_catalog_sync(provider_id: int) -> dict:
         db.commit()
 
         _sync_live_streams(db, provider, client, live_cat_index, summary)
+        _prune_empty_live_categories(db, provider.id)
         _sync_movie_streams(db, provider, client, movie_cat_index, summary)
-        _sync_series_streams(db, provider, client, serie_cat_index, summary)
-        _sync_series_episodes(db, provider, client, summary)
+        upstream_series = _sync_series_streams(db, provider, client, serie_cat_index, summary)
+        _sync_series_episodes(db, provider, client, summary, upstream_series)
 
         provider.is_populated = True
         provider.last_synced_at = datetime.utcnow()
@@ -1180,6 +1404,8 @@ def run_catalog_sync(provider_id: int) -> dict:
 
 def trigger_provider_sync(provider_id: int) -> bool:
     """Kick off a background catalog sync for the given provider."""
+    if is_running("catalog", provider_id):
+        return False
     threading.Thread(
         target=run_catalog_sync,
         args=(provider_id,),

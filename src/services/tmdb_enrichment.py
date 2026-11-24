@@ -36,6 +36,8 @@ from ..models import (
     series_stream_genre_association,
 )
 from .adult import adult_movie_category_ids, adult_serie_category_ids, apply_adult_filter
+from .job_locks import exclusive, is_running
+from .sync_runs import tracked
 from .tmdb_client import TMDBClient, TMDBNotConfigured
 
 logger = logging.getLogger(__name__)
@@ -369,6 +371,8 @@ def _enrich_batch(db, client, model, ids, enrich, genre_id_index, kind, summary)
                         kind, chunk_start, len(ids), done, failed)
 
 
+@tracked("tmdb")
+@exclusive("enrich")
 def run_tmdb_enrichment(provider_id: int) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "provider_id": provider_id,
@@ -434,6 +438,8 @@ def run_tmdb_enrichment(provider_id: int) -> Dict[str, Any]:
 
 
 def trigger_tmdb_enrichment(provider_id: int) -> bool:
+    if is_running("enrich", provider_id):
+        return False
     threading.Thread(
         target=run_tmdb_enrichment,
         args=(provider_id,),

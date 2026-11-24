@@ -111,7 +111,8 @@ def trigger_sync(
             detail="provider has no active_master_user_id; set one before syncing",
         )
 
-    trigger_provider_sync(provider_id)
+    if not trigger_provider_sync(provider_id):
+        raise HTTPException(status_code=409, detail="already running for this provider")
     return {
         "provider_id": provider_id,
         "sync_triggered": True,
@@ -129,7 +130,8 @@ def trigger_movie_details(
     if provider is None:
         raise HTTPException(status_code=404, detail="provider not found")
 
-    trigger_movie_details_sync(provider_id)
+    if not trigger_movie_details_sync(provider_id):
+        raise HTTPException(status_code=409, detail="already running for this provider")
     return {
         "provider_id": provider_id,
         "movie_details_sync_triggered": True,
@@ -147,7 +149,8 @@ def trigger_tmdb(
     if provider is None:
         raise HTTPException(status_code=404, detail="provider not found")
 
-    trigger_tmdb_enrichment(provider_id)
+    if not trigger_tmdb_enrichment(provider_id):
+        raise HTTPException(status_code=409, detail="already running for this provider")
     return {
         "provider_id": provider_id,
         "tmdb_enrichment_triggered": True,
