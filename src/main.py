@@ -27,6 +27,7 @@ from .routers import (
     user_streams,
 )
 from .services.scheduler import start_scheduler, stop_scheduler
+from .services import memwatch
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,11 +45,15 @@ log_redact.install()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     start_scheduler()
+    memwatch.start_sampler()
     yield
+    memwatch.stop_sampler()
     stop_scheduler()
 
 
 app = FastAPI(title="OTTAPI", version="0.1.0", lifespan=lifespan)
+if memwatch.ENABLED:
+    app.add_middleware(memwatch.MemWatchMiddleware)
 
 # CORS — needed once the frontend stops relying on the Vite same-origin
 # proxy. In Tauri Android the WebView is served from `http://tauri.localhost`
