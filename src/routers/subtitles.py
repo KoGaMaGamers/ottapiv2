@@ -27,6 +27,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -287,18 +288,27 @@ def get_subtitles(
             created_at=now,
             updated_at=now,
         )
-        db.add(subtitle)
-        newly_added.append(subtitle)
+        # Two clients opening the same title race here; the loser's insert
+        # hits uq_subtitle_tmdb_lang_ep. Savepoint per row so that only
+        # skips the duplicate (the winner's row is re-read below).
+        try:
+            with db.begin_nested():
+                db.add(subtitle)
+            newly_added.append(subtitle)
+        except IntegrityError:
+            logger.info("subtitles: %s for tmdb_id=%d S%02dE%02d inserted concurrently",
+                        lang_code, tmdb_id, season, episode)
 
-    if newly_added:
-        db.commit()
-        for s in newly_added:
-            db.refresh(s)
+    db.commit()
 
-    all_subs = list(cached.values()) + newly_added
+    query = db.query(Subtitle).filter(
+        Subtitle.tmdb_id == tmdb_id,
+        Subtitle.season == season,
+        Subtitle.episode == episode,
+    )
     if languages:
-        all_subs = [s for s in all_subs if s.lang in languages]
-    return _build_response(all_subs, base_url)
+        query = query.filter(Subtitle.lang.in_(languages))
+    return _build_response(query.all(), base_url)
 
 
 @router.get("/{subtitle_id}")
