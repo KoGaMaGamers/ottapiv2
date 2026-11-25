@@ -35,7 +35,6 @@ import logging
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
-from urllib.parse import urlparse, parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -1192,88 +1191,6 @@ def legacy_similar(
         "has_more": (page * limit) < total,
         "total_matches": total,
     }
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Preview clip — /api/v1/user/preview-clip
-# ═══════════════════════════════════════════════════════════════════════
-#
-# Legacy semantics: return a short (60s) MP4 clip URL the hero carousel
-# plays as a hover-preview. The new backend doesn't generate clips —
-# but it does expose direct stream URLs via /play/preview/{type}/{id}
-# (no slot allocation, uses owner creds). For legacy compatibility we
-# return the full stream URL as the "clip" — the legacy hero player
-# will start at start_at_sec and the carousel auto-advances after
-# duration_sec, so it behaves close enough to the clipped version.
-
-class LegacyPreviewClip(BaseModel):
-    clip_url: str
-    start_at_sec: int
-    duration_sec: int
-    cached: bool
-    expires_at: int
-
-
-@router.get("/api/v1/user/preview-clip", response_model=LegacyPreviewClip)
-def legacy_preview_clip(
-    url: str = Query(..., description="Full provider stream URL (legacy passes the whole thing)"),
-    type: Optional[str] = Query("movie"),
-    user: IPTVUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    # Heuristic: the legacy URL embeds {type}/{user}/{pass}/{xtream_id}.{ext}
-    # Pull the xtream_id and decide which preview endpoint to hit.
-    parsed = urlparse(url)
-    segs = [s for s in parsed.path.split("/") if s]
-    xtream_id_str = ""
-    if segs:
-        last = segs[-1]
-        # strip extension
-        if "." in last:
-            xtream_id_str = last.rsplit(".", 1)[0]
-        else:
-            xtream_id_str = last
-    try:
-        xtream_id = int(xtream_id_str)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="could not parse xtream id from url")
-
-    t = (type or "").lower()
-    # Resolve to a stream URL — use owner creds (no slot allocation, like
-    # the new /play/preview endpoints).
-    if t == "movie":
-        movie = (
-            db.query(MovieStream)
-            .filter(MovieStream.provider_id == user.provider_id)
-            .filter(MovieStream.xtream_id == xtream_id)
-            .one_or_none()
-        )
-        if movie is None:
-            raise HTTPException(status_code=404, detail="movie not found")
-        ext = movie.container_extension or "mp4"
-        clip_url = build_stream_url(user, "movie", movie.xtream_id, ext, db=db)
-    elif t == "series":
-        ep = (
-            db.query(SeriesEpisode)
-            .filter(SeriesEpisode.provider_id == user.provider_id)
-            .filter(SeriesEpisode.xtream_id == xtream_id)
-            .one_or_none()
-        )
-        if ep is None:
-            raise HTTPException(status_code=404, detail="episode not found")
-        ext = ep.container_extension or "mkv"
-        clip_url = build_stream_url(user, "series", ep.xtream_id, ext, db=db)
-    else:
-        # live: forward the URL unchanged (no clip semantics for live)
-        clip_url = url
-
-    return LegacyPreviewClip(
-        clip_url=clip_url,
-        start_at_sec=300,    # 5 min in (matches legacy random-offset window)
-        duration_sec=60,
-        cached=False,
-        expires_at=int(time.time()) + 3600,
-    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
